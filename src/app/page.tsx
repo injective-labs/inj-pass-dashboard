@@ -133,6 +133,9 @@ export default function HomePage() {
       return;
     }
     void loadPasskeyCredentials(activeAdminKey, query, currentPage, pageSize);
+    // Intentionally trigger reloads only on query/pagination/module/key changes.
+    // Load helpers are stable enough for this controlled fetch effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeAdminKey, activeModule, query, currentPage, pageSize]);
 
   useEffect(() => {
