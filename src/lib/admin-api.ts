@@ -3,7 +3,7 @@ export type AdminUserRow = {
   credentialId: string;
   inviteCode: string;
   invitedBy: string | null;
-  ninjiaBalance: number;
+  ninjaBalance: number;
   walletAddress: string | null;
   walletName: string | null;
   createdAt: string;
@@ -23,7 +23,7 @@ export type AdminUserDetail = {
     credentialId: string;
     inviteCode: string;
     invitedBy: string | null;
-    ninjiaBalance: number;
+    ninjaBalance: number;
     walletAddress: string | null;
     walletName: string | null;
     createdAt: string;
@@ -96,6 +96,83 @@ function getApiBaseUrl() {
   return baseUrl.replace(/\/$/, '');
 }
 
+function toFiniteNumber(value: unknown, fallback = 0): number {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : fallback;
+}
+
+function normalizeUserRow(row: Record<string, unknown>): AdminUserRow {
+  return {
+    id: toFiniteNumber(row.id),
+    credentialId: String(row.credentialId ?? ''),
+    inviteCode: String(row.inviteCode ?? ''),
+    invitedBy: (row.invitedBy as string | null) ?? null,
+    ninjaBalance: toFiniteNumber(row.ninjaBalance ?? row.ninjiaBalance),
+    walletAddress: (row.walletAddress as string | null) ?? null,
+    walletName: (row.walletName as string | null) ?? null,
+    createdAt: String(row.createdAt ?? ''),
+    updatedAt: String(row.updatedAt ?? ''),
+    aiUsage: {
+      totalRequests: toFiniteNumber((row.aiUsage as { totalRequests?: unknown } | undefined)?.totalRequests),
+      totalInputTokens: toFiniteNumber((row.aiUsage as { totalInputTokens?: unknown } | undefined)?.totalInputTokens),
+      totalOutputTokens: toFiniteNumber((row.aiUsage as { totalOutputTokens?: unknown } | undefined)?.totalOutputTokens),
+      totalCostNinjia: toFiniteNumber((row.aiUsage as { totalCostNinjia?: unknown } | undefined)?.totalCostNinjia),
+      lastUsedAt: (row.aiUsage as { lastUsedAt?: string | null } | undefined)?.lastUsedAt ?? null,
+    },
+  };
+}
+
+function normalizeUserDetail(payload: Record<string, unknown>): AdminUserDetail {
+  const user = (payload.user as Record<string, unknown>) ?? {};
+  const aiUsage = (payload.aiUsage as Record<string, unknown>) ?? {};
+  const aiLogs = Array.isArray(payload.aiLogs) ? payload.aiLogs : [];
+  const transactions = Array.isArray(payload.transactions) ? payload.transactions : [];
+
+  return {
+    user: {
+      id: toFiniteNumber(user.id),
+      credentialId: String(user.credentialId ?? ''),
+      inviteCode: String(user.inviteCode ?? ''),
+      invitedBy: (user.invitedBy as string | null) ?? null,
+      ninjaBalance: toFiniteNumber(user.ninjaBalance ?? user.ninjiaBalance),
+      walletAddress: (user.walletAddress as string | null) ?? null,
+      walletName: (user.walletName as string | null) ?? null,
+      createdAt: String(user.createdAt ?? ''),
+      updatedAt: String(user.updatedAt ?? ''),
+    },
+    aiUsage: {
+      totalRequests: toFiniteNumber(aiUsage.totalRequests),
+      totalInputTokens: toFiniteNumber(aiUsage.totalInputTokens),
+      totalOutputTokens: toFiniteNumber(aiUsage.totalOutputTokens),
+      totalCostNinjia: toFiniteNumber(aiUsage.totalCostNinjia),
+      lastUsedAt: (aiUsage.lastUsedAt as string | null) ?? null,
+    },
+    aiLogs: aiLogs.map((log) => {
+      const nextLog = log as Record<string, unknown>;
+      return {
+        id: toFiniteNumber(nextLog.id),
+        model: String(nextLog.model ?? ''),
+        inputTokens: toFiniteNumber(nextLog.inputTokens),
+        outputTokens: toFiniteNumber(nextLog.outputTokens),
+        costNinjia: toFiniteNumber(nextLog.costNinjia),
+        conversationId: (nextLog.conversationId as string | null) ?? null,
+        createdAt: String(nextLog.createdAt ?? ''),
+      };
+    }),
+    transactions: transactions.map((tx) => {
+      const nextTx = tx as Record<string, unknown>;
+      return {
+        id: toFiniteNumber(nextTx.id),
+        type: String(nextTx.type ?? ''),
+        amount: toFiniteNumber(nextTx.amount),
+        balanceAfter: toFiniteNumber(nextTx.balanceAfter),
+        metadata: (nextTx.metadata as Record<string, unknown>) ?? {},
+        createdAt: String(nextTx.createdAt ?? ''),
+      };
+    }),
+  };
+}
+
 export function getDefaultAdminKey() {
   return process.env.NEXT_PUBLIC_ADMIN_API_KEY ?? '';
 }
@@ -159,16 +236,22 @@ export async function fetchUsers(params: {
   if (params.limit) searchParams.set('limit', String(params.limit));
 
   const suffix = searchParams.toString();
-  return request<{
+  const response = await request<{
     users: AdminUserRow[];
     total: number;
     page: number;
     limit: number;
   }>(`/admin/users${suffix ? `?${suffix}` : ''}`, {}, params.adminKey);
+
+  return {
+    ...response,
+    users: response.users.map((row) => normalizeUserRow(row as unknown as Record<string, unknown>)),
+  };
 }
 
 export async function fetchUserDetail(userId: number, adminKey: string) {
-  return request<AdminUserDetail>(`/admin/users/${userId}`, {}, adminKey);
+  const response = await request<Record<string, unknown>>(`/admin/users/${userId}`, {}, adminKey);
+  return normalizeUserDetail(response);
 }
 
 export async function fetchPasskeyCredentials(params: {

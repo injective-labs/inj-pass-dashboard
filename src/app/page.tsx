@@ -54,7 +54,10 @@ function formatDate(value?: string | null) {
 }
 
 function formatNumber(value: number, maximumFractionDigits = 2) {
-  return new Intl.NumberFormat('en-US', { maximumFractionDigits }).format(value);
+  const safeValue = Number(value);
+  return new Intl.NumberFormat('en-US', {
+    maximumFractionDigits,
+  }).format(Number.isFinite(safeValue) ? safeValue : 0);
 }
 
 function getPageCount(total: number, pageSize: number) {
@@ -670,7 +673,7 @@ export default function HomePage() {
                     <td className={styles.fullAddress}>{user.walletAddress || '-'}</td>
                     <td>{user.inviteCode}</td>
                     <td>{user.invitedBy || '-'}</td>
-                    <td>{formatNumber(user.ninjiaBalance)}</td>
+                    <td>{formatNumber(user.ninjaBalance)}</td>
                     <td>{formatNumber(user.aiUsage.totalRequests)}</td>
                     <td>{formatDate(user.aiUsage.lastUsedAt)}</td>
                     <td>{formatDate(user.createdAt)}</td>
@@ -933,7 +936,7 @@ export default function HomePage() {
           <div className={styles.detailGrid}>
             <div className={styles.detailItem}><span>User</span><strong>{focusedUser.walletName || `#${focusedUser.id}`}</strong></div>
             <div className={styles.detailItem}><span>Wallet</span><strong className={styles.fullAddress}>{focusedUser.walletAddress || '-'}</strong></div>
-            <div className={styles.detailItem}><span>Current Balance</span><strong>{formatNumber(userDetail.user.ninjiaBalance)}</strong></div>
+            <div className={styles.detailItem}><span>Current Balance</span><strong>{formatNumber(userDetail.user.ninjaBalance)}</strong></div>
             <div className={styles.detailItem}><span>Invite Code</span><strong>{focusedUser.inviteCode}</strong></div>
           </div>
         </section>
@@ -1189,7 +1192,7 @@ export default function HomePage() {
                   <div className={styles.focusedUserBlock}>
                     <strong>#{focusedUser.id} {focusedUser.walletName || 'Unnamed User'}</strong>
                     <div className={styles.contextSub}>Invite Code: {focusedUser.inviteCode}</div>
-                    <div className={styles.contextSub}>NINJA: {formatNumber(focusedUser.ninjiaBalance)}</div>
+                    <div className={styles.contextSub}>NINJA: {formatNumber(focusedUser.ninjaBalance)}</div>
                     <div className={styles.contextSub}>Wallet Address:</div>
                     <div className={styles.fullAddress}>{focusedUser.walletAddress || '-'}</div>
                   </div>
