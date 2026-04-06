@@ -12,7 +12,7 @@ export type AdminUserRow = {
     totalRequests: number;
     totalInputTokens: number;
     totalOutputTokens: number;
-    totalCostNinjia: number;
+    totalCostNinja: number;
     lastUsedAt: string | null;
   };
 };
@@ -33,7 +33,7 @@ export type AdminUserDetail = {
     totalRequests: number;
     totalInputTokens: number;
     totalOutputTokens: number;
-    totalCostNinjia: number;
+    totalCostNinja: number;
     lastUsedAt: string | null;
   };
   aiLogs: Array<{
@@ -41,7 +41,7 @@ export type AdminUserDetail = {
     model: string;
     inputTokens: number;
     outputTokens: number;
-    costNinjia: number;
+    costNinja: number;
     conversationId: string | null;
     createdAt: string;
   }>;
@@ -107,7 +107,7 @@ function normalizeUserRow(row: Record<string, unknown>): AdminUserRow {
     credentialId: String(row.credentialId ?? ''),
     inviteCode: String(row.inviteCode ?? ''),
     invitedBy: (row.invitedBy as string | null) ?? null,
-    ninjaBalance: toFiniteNumber(row.ninjaBalance ?? row.ninjiaBalance),
+    ninjaBalance: toFiniteNumber(row.ninjaBalance),
     walletAddress: (row.walletAddress as string | null) ?? null,
     walletName: (row.walletName as string | null) ?? null,
     createdAt: String(row.createdAt ?? ''),
@@ -116,7 +116,7 @@ function normalizeUserRow(row: Record<string, unknown>): AdminUserRow {
       totalRequests: toFiniteNumber((row.aiUsage as { totalRequests?: unknown } | undefined)?.totalRequests),
       totalInputTokens: toFiniteNumber((row.aiUsage as { totalInputTokens?: unknown } | undefined)?.totalInputTokens),
       totalOutputTokens: toFiniteNumber((row.aiUsage as { totalOutputTokens?: unknown } | undefined)?.totalOutputTokens),
-      totalCostNinjia: toFiniteNumber((row.aiUsage as { totalCostNinjia?: unknown } | undefined)?.totalCostNinjia),
+      totalCostNinja: toFiniteNumber((row.aiUsage as { totalCostNinja?: unknown } | undefined)?.totalCostNinja),
       lastUsedAt: (row.aiUsage as { lastUsedAt?: string | null } | undefined)?.lastUsedAt ?? null,
     },
   };
@@ -134,7 +134,7 @@ function normalizeUserDetail(payload: Record<string, unknown>): AdminUserDetail 
       credentialId: String(user.credentialId ?? ''),
       inviteCode: String(user.inviteCode ?? ''),
       invitedBy: (user.invitedBy as string | null) ?? null,
-      ninjaBalance: toFiniteNumber(user.ninjaBalance ?? user.ninjiaBalance),
+      ninjaBalance: toFiniteNumber(user.ninjaBalance),
       walletAddress: (user.walletAddress as string | null) ?? null,
       walletName: (user.walletName as string | null) ?? null,
       createdAt: String(user.createdAt ?? ''),
@@ -144,7 +144,7 @@ function normalizeUserDetail(payload: Record<string, unknown>): AdminUserDetail 
       totalRequests: toFiniteNumber(aiUsage.totalRequests),
       totalInputTokens: toFiniteNumber(aiUsage.totalInputTokens),
       totalOutputTokens: toFiniteNumber(aiUsage.totalOutputTokens),
-      totalCostNinjia: toFiniteNumber(aiUsage.totalCostNinjia),
+      totalCostNinja: toFiniteNumber(aiUsage.totalCostNinja),
       lastUsedAt: (aiUsage.lastUsedAt as string | null) ?? null,
     },
     aiLogs: aiLogs.map((log) => {
@@ -154,7 +154,7 @@ function normalizeUserDetail(payload: Record<string, unknown>): AdminUserDetail 
         model: String(nextLog.model ?? ''),
         inputTokens: toFiniteNumber(nextLog.inputTokens),
         outputTokens: toFiniteNumber(nextLog.outputTokens),
-        costNinjia: toFiniteNumber(nextLog.costNinjia),
+        costNinja: toFiniteNumber(nextLog.costNinja),
         conversationId: (nextLog.conversationId as string | null) ?? null,
         createdAt: String(nextLog.createdAt ?? ''),
       };

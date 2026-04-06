@@ -770,7 +770,7 @@ export default function HomePage() {
             <div className={styles.statCard}><span>Total Requests</span><strong>{formatNumber(userDetail.aiUsage.totalRequests)}</strong></div>
             <div className={styles.statCard}><span>Input Tokens</span><strong>{formatNumber(userDetail.aiUsage.totalInputTokens)}</strong></div>
             <div className={styles.statCard}><span>Output Tokens</span><strong>{formatNumber(userDetail.aiUsage.totalOutputTokens)}</strong></div>
-            <div className={styles.statCard}><span>Total NINJA Cost</span><strong>{formatNumber(userDetail.aiUsage.totalCostNinjia, 4)}</strong></div>
+            <div className={styles.statCard}><span>Total NINJA Cost</span><strong>{formatNumber(userDetail.aiUsage.totalCostNinja, 4)}</strong></div>
           </div>
         </section>
 
@@ -789,7 +789,7 @@ export default function HomePage() {
                   <div className={styles.itemMeta}>
                     <span>In {formatNumber(log.inputTokens)}</span>
                     <span>Out {formatNumber(log.outputTokens)}</span>
-                    <span>{formatNumber(log.costNinjia, 4)} NINJA</span>
+                    <span>{formatNumber(log.costNinja, 4)} NINJA</span>
                   </div>
                 </article>
               ))}
