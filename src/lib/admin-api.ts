@@ -4,10 +4,16 @@ export type AdminUserRow = {
   inviteCode: string;
   invitedBy: string | null;
   ninjaBalance: number;
+  chanceRemaining?: number;
+  chanceCooldownEndsAt?: number;
   walletAddress: string | null;
   walletName: string | null;
   createdAt: string;
   updatedAt: string;
+  aiWalletCount?: number;
+  aiRoundCount?: number;
+  chancePurchaseCount?: number;
+  latestChancePurchaseAt?: string | null;
   aiUsage: {
     totalRequests: number;
     totalInputTokens: number;
@@ -24,8 +30,11 @@ export type AdminUserDetail = {
     inviteCode: string;
     invitedBy: string | null;
     ninjaBalance: number;
+    chanceRemaining?: number;
+    chanceCooldownEndsAt?: number;
     walletAddress: string | null;
     walletName: string | null;
+    passkeyCounter?: number;
     createdAt: string;
     updatedAt: string;
   };
@@ -53,6 +62,75 @@ export type AdminUserDetail = {
     metadata: Record<string, unknown>;
     createdAt: string;
   }>;
+  chancePurchases?: Array<{
+    id: number;
+    txHash: string;
+    productId: string;
+    chanceAmount: number;
+    status: string;
+    createdAt: string;
+  }>;
+  aiWalletSummary?: {
+    walletCount: number;
+    totalRounds: number;
+  };
+};
+
+export type AdminAiWalletRow = {
+  sandboxAddress: string;
+  sessionCount: number;
+  roundCount: number;
+  firstActiveAt: string | null;
+  lastActiveAt: string | null;
+};
+
+export type AdminAiWalletListResponse = {
+  userId: number;
+  walletAddress: string | null;
+  total: number;
+  page: number;
+  limit: number;
+  wallets: AdminAiWalletRow[];
+};
+
+export type AdminAiWalletDetailResponse = {
+  userId: number;
+  wallet: AdminAiWalletRow;
+  conversations: {
+    total: number;
+    page: number;
+    limit: number;
+    items: Array<{
+      conversationId: string;
+      title: string | null;
+      model: string | null;
+      roundCount: number;
+      createdAt: string | null;
+      updatedAt: string | null;
+    }>;
+  };
+  toolSummary: Array<{
+    toolId: string;
+    count: number;
+  }>;
+};
+
+export type AdminChancePurchaseListResponse = {
+  userId: number;
+  total: number;
+  page: number;
+  limit: number;
+  purchases: Array<{
+    id: number;
+    txHash: string;
+    chainId: string | null;
+    productId: string;
+    chanceAmount: number;
+    balanceAfter: number;
+    status: string;
+    metadata: Record<string, unknown>;
+    createdAt: string;
+  }>;
 };
 
 export type AdminPasskeyCredentialRow = {
@@ -67,6 +145,38 @@ export type AdminPasskeyCredentialRow = {
 };
 
 export type AdminDAppCategory = string;
+export type AdminDAppPrimaryCategory = AdminDAppCategory;
+
+export type AdminDAppToolId =
+  | 'get_wallet_info'
+  | 'get_balance'
+  | 'get_swap_quote'
+  | 'execute_swap'
+  | 'send_token'
+  | 'get_tx_history'
+  | 'play_hash_mahjong'
+  | 'play_hash_mahjong_multi';
+
+export type AdminToolCategory =
+  | 'read'
+  | 'quote'
+  | 'transact'
+  | 'sign'
+  | 'position'
+  | 'game';
+
+export type AdminToolRiskLevel = 'safe' | 'confirm_required' | 'destructive';
+
+export type AdminToolStatus = 'active' | 'disabled' | 'deprecated';
+
+export type AdminToolDefinition = {
+  id: AdminDAppToolId;
+  displayName: string;
+  description: string;
+  category: AdminToolCategory;
+  riskLevel: AdminToolRiskLevel;
+  status: AdminToolStatus;
+};
 
 export type AdminDAppRow = {
   id: string;
@@ -74,9 +184,17 @@ export type AdminDAppRow = {
   description: string;
   icon: string;
   categories: AdminDAppCategory[];
+  primaryCategory?: AdminDAppPrimaryCategory;
+  toolIds?: AdminDAppToolId[];
+  aiDriven?: boolean;
   order: number;
   url: string;
   featured?: boolean;
+  aiPrompt?: string;
+  aiPromptVersion?: string;
+  mentionPrompt?: string;
+  mentionLabel?: string;
+  mentionThemeKey?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -89,11 +207,17 @@ export type AdminDAppTab = {
 };
 
 function getApiBaseUrl() {
-  const baseUrl = process.env.NEXT_PUBLIC_API_URL;
-  if (!baseUrl) {
-    throw new Error('NEXT_PUBLIC_API_URL is required');
+  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL?.replace(/\/$/, '');
+  if (backendUrl) {
+    return `${backendUrl}/api`;
   }
-  return baseUrl.replace(/\/$/, '');
+
+  const baseUrl = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, '');
+  if (baseUrl) {
+    return baseUrl;
+  }
+
+  throw new Error('NEXT_PUBLIC_BACKEND_URL or NEXT_PUBLIC_API_URL is required');
 }
 
 function toFiniteNumber(value: unknown, fallback = 0): number {
@@ -108,10 +232,17 @@ function normalizeUserRow(row: Record<string, unknown>): AdminUserRow {
     inviteCode: String(row.inviteCode ?? ''),
     invitedBy: (row.invitedBy as string | null) ?? null,
     ninjaBalance: toFiniteNumber(row.ninjaBalance),
+    chanceRemaining: toFiniteNumber(row.chanceRemaining),
+    chanceCooldownEndsAt: toFiniteNumber(row.chanceCooldownEndsAt),
     walletAddress: (row.walletAddress as string | null) ?? null,
     walletName: (row.walletName as string | null) ?? null,
     createdAt: String(row.createdAt ?? ''),
     updatedAt: String(row.updatedAt ?? ''),
+    aiWalletCount: toFiniteNumber(row.aiWalletCount),
+    aiRoundCount: toFiniteNumber(row.aiRoundCount),
+    chancePurchaseCount: toFiniteNumber(row.chancePurchaseCount),
+    latestChancePurchaseAt:
+      (row.latestChancePurchaseAt as string | null) ?? null,
     aiUsage: {
       totalRequests: toFiniteNumber((row.aiUsage as { totalRequests?: unknown } | undefined)?.totalRequests),
       totalInputTokens: toFiniteNumber((row.aiUsage as { totalInputTokens?: unknown } | undefined)?.totalInputTokens),
@@ -135,8 +266,11 @@ function normalizeUserDetail(payload: Record<string, unknown>): AdminUserDetail 
       inviteCode: String(user.inviteCode ?? ''),
       invitedBy: (user.invitedBy as string | null) ?? null,
       ninjaBalance: toFiniteNumber(user.ninjaBalance),
+      chanceRemaining: toFiniteNumber(user.chanceRemaining),
+      chanceCooldownEndsAt: toFiniteNumber(user.chanceCooldownEndsAt),
       walletAddress: (user.walletAddress as string | null) ?? null,
       walletName: (user.walletName as string | null) ?? null,
+      passkeyCounter: toFiniteNumber(user.passkeyCounter),
       createdAt: String(user.createdAt ?? ''),
       updatedAt: String(user.updatedAt ?? ''),
     },
@@ -170,6 +304,32 @@ function normalizeUserDetail(payload: Record<string, unknown>): AdminUserDetail 
         createdAt: String(nextTx.createdAt ?? ''),
       };
     }),
+    chancePurchases: Array.isArray(payload.chancePurchases)
+      ? payload.chancePurchases.map((item) => {
+          const row = item as Record<string, unknown>;
+          return {
+            id: toFiniteNumber(row.id),
+            txHash: String(row.txHash ?? ''),
+            productId: String(row.productId ?? ''),
+            chanceAmount: toFiniteNumber(row.chanceAmount),
+            status: String(row.status ?? ''),
+            createdAt: String(row.createdAt ?? ''),
+          };
+        })
+      : [],
+    aiWalletSummary: payload.aiWalletSummary
+      ? {
+          walletCount: toFiniteNumber(
+            (payload.aiWalletSummary as Record<string, unknown>).walletCount,
+          ),
+          totalRounds: toFiniteNumber(
+            (payload.aiWalletSummary as Record<string, unknown>).totalRounds,
+          ),
+        }
+      : {
+          walletCount: 0,
+          totalRounds: 0,
+        },
   };
 }
 
@@ -229,11 +389,19 @@ export async function fetchUsers(params: {
   query?: string;
   page?: number;
   limit?: number;
+  hasChancePurchase?: boolean;
+  sortBy?: 'createdAt' | 'ninjaBalance' | 'aiWalletCount';
+  sortDir?: 'asc' | 'desc';
 }) {
   const searchParams = new URLSearchParams();
   if (params.query) searchParams.set('query', params.query);
   if (params.page) searchParams.set('page', String(params.page));
   if (params.limit) searchParams.set('limit', String(params.limit));
+  if (typeof params.hasChancePurchase === 'boolean') {
+    searchParams.set('hasChancePurchase', String(params.hasChancePurchase));
+  }
+  if (params.sortBy) searchParams.set('sortBy', params.sortBy);
+  if (params.sortDir) searchParams.set('sortDir', params.sortDir);
 
   const suffix = searchParams.toString();
   const response = await request<{
@@ -274,6 +442,61 @@ export async function fetchPasskeyCredentials(params: {
   }>(`/admin/passkey-credentials${suffix ? `?${suffix}` : ''}`, {}, params.adminKey);
 }
 
+export async function fetchUserAiWallets(input: {
+  adminKey: string;
+  userId: number;
+  page?: number;
+  limit?: number;
+}) {
+  const searchParams = new URLSearchParams();
+  if (input.page) searchParams.set('page', String(input.page));
+  if (input.limit) searchParams.set('limit', String(input.limit));
+  const suffix = searchParams.toString();
+
+  return request<AdminAiWalletListResponse>(
+    `/admin/users/${input.userId}/ai-wallets${suffix ? `?${suffix}` : ''}`,
+    {},
+    input.adminKey,
+  );
+}
+
+export async function fetchUserAiWalletDetail(input: {
+  adminKey: string;
+  userId: number;
+  walletAddress: string;
+  page?: number;
+  limit?: number;
+}) {
+  const searchParams = new URLSearchParams();
+  if (input.page) searchParams.set('page', String(input.page));
+  if (input.limit) searchParams.set('limit', String(input.limit));
+  const suffix = searchParams.toString();
+
+  return request<AdminAiWalletDetailResponse>(
+    `/admin/users/${input.userId}/ai-wallets/${encodeURIComponent(input.walletAddress)}${suffix ? `?${suffix}` : ''}`,
+    {},
+    input.adminKey,
+  );
+}
+
+export async function fetchUserChancePurchases(input: {
+  adminKey: string;
+  userId: number;
+  page?: number;
+  limit?: number;
+}) {
+  const searchParams = new URLSearchParams();
+  if (input.page) searchParams.set('page', String(input.page));
+  if (input.limit) searchParams.set('limit', String(input.limit));
+  const suffix = searchParams.toString();
+
+  return request<AdminChancePurchaseListResponse>(
+    `/admin/users/${input.userId}/chance-purchases${suffix ? `?${suffix}` : ''}`,
+    {},
+    input.adminKey,
+  );
+}
+
 export async function adjustUserBalance(input: {
   userId: number;
   amount: number;
@@ -309,7 +532,11 @@ export async function fetchAdminDapps(params: {
   if (params.query) searchParams.set('query', params.query);
   const suffix = searchParams.toString();
 
-  return request<{ dapps: AdminDAppRow[]; tabs: AdminDAppTab[] }>(
+  return request<{
+    dapps: AdminDAppRow[];
+    tabs: AdminDAppTab[];
+    tools: AdminToolDefinition[];
+  }>(
     `/dapps/admin${suffix ? `?${suffix}` : ''}`,
     {},
     params.adminKey,
@@ -322,10 +549,18 @@ export async function saveAdminDapp(input: {
   name: string;
   description: string;
   categories: AdminDAppCategory[];
+  primaryCategory?: AdminDAppPrimaryCategory;
+  toolIds?: AdminDAppToolId[];
+  aiDriven?: boolean;
   order: number;
   url: string;
   icon: string;
   featured?: boolean;
+  aiPrompt?: string;
+  aiPromptVersion?: string;
+  mentionPrompt?: string;
+  mentionLabel?: string;
+  mentionThemeKey?: string;
 }) {
   const path = input.id ? `/dapps/admin/${input.id}` : '/dapps/admin';
   const method = input.id ? 'PUT' : 'POST';
@@ -338,10 +573,18 @@ export async function saveAdminDapp(input: {
         name: input.name,
         description: input.description,
         categories: input.categories,
+        primaryCategory: input.primaryCategory,
+        toolIds: input.toolIds,
+        aiDriven: Boolean(input.aiDriven),
         order: input.order,
         url: input.url,
         icon: input.icon,
         featured: Boolean(input.featured),
+        aiPrompt: input.aiPrompt,
+        aiPromptVersion: input.aiPromptVersion,
+        mentionPrompt: input.mentionPrompt,
+        mentionLabel: input.mentionLabel,
+        mentionThemeKey: input.mentionThemeKey,
       }),
     },
     input.adminKey,

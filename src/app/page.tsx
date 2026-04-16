@@ -4,46 +4,69 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   adjustUserBalance,
   fetchAdminDapps,
-  fetchPasskeyCredentials,
+  fetchUserAiWalletDetail,
+  fetchUserAiWallets,
+  fetchUserChancePurchases,
   fetchUserDetail,
   fetchUsers,
   getDefaultAdminKey,
   saveAdminDapp,
   saveAdminDappTabs,
   uploadAdminDappImage,
+  type AdminAiWalletDetailResponse,
+  type AdminAiWalletRow,
   type AdminDAppCategory,
+  type AdminDAppPrimaryCategory,
   type AdminDAppRow,
   type AdminDAppTab,
-  type AdminPasskeyCredentialRow,
+  type AdminDAppToolId,
+  type AdminToolDefinition,
   type AdminUserDetail,
   type AdminUserRow,
 } from '@/lib/admin-api';
 import styles from './page.module.css';
 
 const ADMIN_KEY_STORAGE = 'inj-dashboard-admin-key';
-const DEFAULT_PAGE_SIZE = 10;
+const PAGE_SIZE = 10;
 
-type ModuleKey = 'users' | 'passkey-credentials' | 'dapps';
-type UserSubview = 'list' | 'ai' | 'ninja';
+type ModuleKey = 'users' | 'dapps';
+type UserViewTab = 'overview' | 'wallets' | 'ninja' | 'transactions';
+
 type DAppEditorState = {
   id?: string;
   name: string;
   description: string;
   categories: AdminDAppCategory[];
+  primaryCategory?: AdminDAppPrimaryCategory;
+  toolIds: AdminDAppToolId[];
+  aiDriven: boolean;
   order: number;
   url: string;
   icon: string;
   featured: boolean;
+  aiPrompt: string;
+  aiPromptVersion: string;
+  mentionPrompt: string;
+  mentionLabel: string;
+  mentionThemeKey: string;
 };
 
 const EMPTY_DAPP_FORM: DAppEditorState = {
   name: '',
   description: '',
   categories: [],
+  primaryCategory: undefined,
+  toolIds: [],
+  aiDriven: false,
   order: 0,
   url: '',
   icon: '',
   featured: false,
+  aiPrompt: '',
+  aiPromptVersion: 'v1',
+  mentionPrompt: '',
+  mentionLabel: '',
+  mentionThemeKey: '',
 };
 
 function formatDate(value?: string | null) {
@@ -72,11 +95,32 @@ function normalizeTabId(value: string) {
     .replace(/^-+|-+$/g, '');
 }
 
+function isAiDrivenCategoryId(value?: string | null) {
+  const normalized = normalizeTabId(String(value ?? ''));
+  return normalized === 'ai' || normalized === 'ai-driven';
+}
+
+function isAiDrivenTab(tab: { id: string; label?: string }) {
+  return isAiDrivenCategoryId(tab.id) || isAiDrivenCategoryId(tab.label);
+}
+
+function stripAiDrivenCategories(
+  categories: AdminDAppCategory[],
+  tabs: AdminDAppTab[],
+) {
+  const aiTabIds = new Set(
+    tabs.filter((tab) => isAiDrivenTab(tab)).map((tab) => tab.id),
+  );
+
+  return categories.filter(
+    (category) => !aiTabIds.has(category) && !isAiDrivenCategoryId(category),
+  );
+}
+
 function resolveDappIcon(icon: string) {
   if (!icon) return '';
   if (icon.startsWith('/')) return icon;
   if (/\.(png|jpe?g|webp|gif|svg|avif)(\?.*)?$/i.test(icon)) return icon;
-
   try {
     const parsed = icon.startsWith('http') ? new URL(icon) : new URL(`https://${icon}`);
     return `https://www.google.com/s2/favicons?domain=${parsed.hostname}&sz=128`;
@@ -85,39 +129,74 @@ function resolveDappIcon(icon: string) {
   }
 }
 
+function breadcrumbs(input: {
+  module: ModuleKey;
+  user: AdminUserRow | null;
+  userTab: UserViewTab;
+  walletAddress: string | null;
+  dapp: AdminDAppRow | null;
+}) {
+  if (input.module === 'dapps') {
+    return input.dapp ? ['DApps', input.dapp.name] : ['DApps'];
+  }
+  if (!input.user) return ['Users'];
+  if (input.userTab === 'wallets' && input.walletAddress) {
+    return ['Users', `#${input.user.id}`, 'AI Wallets', input.walletAddress];
+  }
+  if (input.userTab === 'wallets') {
+    return ['Users', `#${input.user.id}`, 'AI Wallets'];
+  }
+  if (input.userTab === 'ninja') {
+    return ['Users', `#${input.user.id}`, 'NINJA'];
+  }
+  if (input.userTab === 'transactions') {
+    return ['Users', `#${input.user.id}`, 'Transactions'];
+  }
+  return ['Users', `#${input.user.id}`, 'Overview'];
+}
+
 export default function HomePage() {
   const [adminKeyInput, setAdminKeyInput] = useState('');
   const [activeAdminKey, setActiveAdminKey] = useState('');
-  const [activeModule, setActiveModule] = useState<ModuleKey>('users');
+  const [module, setModule] = useState<ModuleKey>('users');
   const [queryInput, setQueryInput] = useState('');
   const [query, setQuery] = useState('');
   const [users, setUsers] = useState<AdminUserRow[]>([]);
-  const [credentials, setCredentials] = useState<AdminPasskeyCredentialRow[]>([]);
-  const [dapps, setDapps] = useState<AdminDAppRow[]>([]);
-  const [focusedUser, setFocusedUser] = useState<AdminUserRow | null>(null);
+  const [totalUsers, setTotalUsers] = useState(0);
+  const [page, setPage] = useState(1);
+  const [hasChanceFilter, setHasChanceFilter] = useState<'all' | 'buyers'>('all');
+  const [sortBy, setSortBy] = useState<'createdAt' | 'ninjaBalance' | 'aiWalletCount'>('createdAt');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [selectedUser, setSelectedUser] = useState<AdminUserRow | null>(null);
   const [userDetail, setUserDetail] = useState<AdminUserDetail | null>(null);
-  const [userSubview, setUserSubview] = useState<UserSubview>('list');
-  const [usersLoading, setUsersLoading] = useState(false);
-  const [dappsLoading, setDappsLoading] = useState(false);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [savingDapp, setSavingDapp] = useState(false);
-  const [uploadingImage, setUploadingImage] = useState(false);
+  const [userTab, setUserTab] = useState<UserViewTab>('overview');
+  const [wallets, setWallets] = useState<AdminAiWalletRow[]>([]);
+  const [walletsTotal, setWalletsTotal] = useState(0);
+  const [walletPage, setWalletPage] = useState(1);
+  const [selectedWalletAddress, setSelectedWalletAddress] = useState<string | null>(null);
+  const [walletDetail, setWalletDetail] = useState<AdminAiWalletDetailResponse | null>(null);
+  const [chanceRows, setChanceRows] = useState<
+    Awaited<ReturnType<typeof fetchUserChancePurchases>>['purchases']
+  >([]);
+
+  const [dapps, setDapps] = useState<AdminDAppRow[]>([]);
+  const [dappTabs, setDappTabs] = useState<AdminDAppTab[]>([]);
+  const [toolDefinitions, setToolDefinitions] = useState<AdminToolDefinition[]>([]);
+  const [selectedDappId, setSelectedDappId] = useState<string | null>(null);
   const [dappModalOpen, setDappModalOpen] = useState(false);
   const [tabsModalOpen, setTabsModalOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
-  const [totalUsers, setTotalUsers] = useState(0);
-  const [totalCredentials, setTotalCredentials] = useState(0);
+  const [tabDrafts, setTabDrafts] = useState<AdminDAppTab[]>([]);
+  const [dappForm, setDappForm] = useState<DAppEditorState>(EMPTY_DAPP_FORM);
+
+  const [loading, setLoading] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
   const [balanceMode, setBalanceMode] = useState<'set' | 'increment'>('increment');
   const [balanceAmount, setBalanceAmount] = useState('');
   const [balanceReason, setBalanceReason] = useState('');
-  const [dappForm, setDappForm] = useState<DAppEditorState>(EMPTY_DAPP_FORM);
-  const [selectedDappId, setSelectedDappId] = useState<string | null>(null);
-  const [dappTabs, setDappTabs] = useState<AdminDAppTab[]>([]);
-  const [tabDrafts, setTabDrafts] = useState<AdminDAppTab[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     const stored = window.localStorage.getItem(ADMIN_KEY_STORAGE) || getDefaultAdminKey();
@@ -127,73 +206,64 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!activeAdminKey) return;
-    if (activeModule === 'users') {
-      void loadUsers(activeAdminKey, query, currentPage, pageSize);
+    if (module === 'users') {
+      void loadUsers(activeAdminKey, query, page, hasChanceFilter);
       return;
     }
-    if (activeModule === 'dapps') {
-      void loadDapps(activeAdminKey, query);
-      return;
-    }
-    void loadPasskeyCredentials(activeAdminKey, query, currentPage, pageSize);
-    // Intentionally trigger reloads only on query/pagination/module/key changes.
-    // Load helpers are stable enough for this controlled fetch effect.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAdminKey, activeModule, query, currentPage, pageSize]);
+    void loadDapps(activeAdminKey, query);
+  }, [activeAdminKey, module, query, page, hasChanceFilter, sortBy, sortDir]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!success) return;
-    const timer = window.setTimeout(() => {
-      setSuccess(null);
-    }, 2500);
-
+    const timer = window.setTimeout(() => setSuccess(null), 2200);
     return () => window.clearTimeout(timer);
   }, [success]);
 
   useEffect(() => {
-    if (!focusedUser || !activeAdminKey || userSubview === 'list') return;
-    void loadUserDetail(focusedUser.id, activeAdminKey);
-  }, [focusedUser, activeAdminKey, userSubview]);
+    if (!selectedUser || !activeAdminKey) return;
+    void loadUserDetail(selectedUser.id, activeAdminKey);
+  }, [selectedUser, activeAdminKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!selectedUser || userTab !== 'wallets' || !activeAdminKey) return;
+    void loadUserWallets(selectedUser.id, activeAdminKey, walletPage);
+  }, [selectedUser, userTab, activeAdminKey, walletPage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadUsers(
-    nextKey = activeAdminKey,
+    adminKey = activeAdminKey,
     nextQuery = query,
-    nextPage = currentPage,
-    nextPageSize = pageSize,
+    nextPage = page,
+    chanceFilter = hasChanceFilter,
   ) {
-    if (!nextKey) {
+    if (!adminKey) {
       setError('Please enter admin key first.');
       return;
     }
-
-    setUsersLoading(true);
+    setLoading(true);
     setError(null);
-
     try {
       const data = await fetchUsers({
-        adminKey: nextKey,
+        adminKey,
         query: nextQuery,
         page: nextPage,
-        limit: nextPageSize,
+        limit: PAGE_SIZE,
+        hasChancePurchase: chanceFilter === 'buyers' ? true : undefined,
+        sortBy,
+        sortDir,
       });
-
       setUsers(data.users);
       setTotalUsers(data.total);
 
-      if (focusedUser) {
-        const nextFocused = data.users.find((user) => user.id === focusedUser.id);
-        if (nextFocused) {
-          setFocusedUser(nextFocused);
-        }
+      if (selectedUser) {
+        const nextSelected = data.users.find((item) => item.id === selectedUser.id);
+        if (nextSelected) setSelectedUser(nextSelected);
       }
     } catch (nextError) {
       setUsers([]);
       setTotalUsers(0);
-      setFocusedUser(null);
-      setUserDetail(null);
       setError(nextError instanceof Error ? nextError.message : 'Failed to load users');
     } finally {
-      setUsersLoading(false);
+      setLoading(false);
     }
   }
 
@@ -203,228 +273,128 @@ export default function HomePage() {
     try {
       const detail = await fetchUserDetail(userId, adminKey);
       setUserDetail(detail);
+      const chance = await fetchUserChancePurchases({
+        adminKey,
+        userId,
+        page: 1,
+        limit: 10,
+      });
+      setChanceRows(chance.purchases);
     } catch (nextError) {
       setUserDetail(null);
+      setChanceRows([]);
       setError(nextError instanceof Error ? nextError.message : 'Failed to load user detail');
     } finally {
       setDetailLoading(false);
     }
   }
 
-  async function loadPasskeyCredentials(
-    nextKey = activeAdminKey,
-    nextQuery = query,
-    nextPage = currentPage,
-    nextPageSize = pageSize,
-  ) {
-    if (!nextKey) {
-      setError('Please enter admin key first.');
-      return;
-    }
-
-    setUsersLoading(true);
+  async function loadUserWallets(userId: number, adminKey: string, targetPage: number) {
+    setDetailLoading(true);
     setError(null);
-
     try {
-      const data = await fetchPasskeyCredentials({
-        adminKey: nextKey,
-        query: nextQuery,
-        page: nextPage,
-        limit: nextPageSize,
+      const result = await fetchUserAiWallets({
+        adminKey,
+        userId,
+        page: targetPage,
+        limit: PAGE_SIZE,
       });
-      setCredentials(data.credentials);
-      setTotalCredentials(data.total);
+      setWallets(result.wallets);
+      setWalletsTotal(result.total);
     } catch (nextError) {
-      setCredentials([]);
-      setTotalCredentials(0);
-      setError(nextError instanceof Error ? nextError.message : 'Failed to load passkey credentials');
+      setWallets([]);
+      setWalletsTotal(0);
+      setError(nextError instanceof Error ? nextError.message : 'Failed to load AI wallets');
     } finally {
-      setUsersLoading(false);
+      setDetailLoading(false);
     }
   }
 
-  async function loadDapps(nextKey = activeAdminKey, nextQuery = query) {
-    if (!nextKey) {
+  async function loadWalletDetail(walletAddress: string) {
+    if (!selectedUser || !activeAdminKey) return;
+    setDetailLoading(true);
+    setError(null);
+    try {
+      const detail = await fetchUserAiWalletDetail({
+        adminKey: activeAdminKey,
+        userId: selectedUser.id,
+        walletAddress,
+        page: 1,
+        limit: 20,
+      });
+      setSelectedWalletAddress(walletAddress);
+      setWalletDetail(detail);
+    } catch (nextError) {
+      setWalletDetail(null);
+      setSelectedWalletAddress(null);
+      setError(nextError instanceof Error ? nextError.message : 'Failed to load wallet detail');
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  async function loadDapps(adminKey = activeAdminKey, nextQuery = query) {
+    if (!adminKey) {
       setError('Please enter admin key first.');
       return;
     }
-
-    setDappsLoading(true);
+    setLoading(true);
     setError(null);
-
     try {
-      const data = await fetchAdminDapps({
-        adminKey: nextKey,
-        query: nextQuery,
-      });
-
+      const data = await fetchAdminDapps({ adminKey, query: nextQuery });
       setDapps(data.dapps);
-      const sortedTabs = data.tabs
-        .slice()
-        .sort((left, right) => left.order - right.order);
-      setDappTabs(sortedTabs);
-      setTabDrafts(sortedTabs);
-
-      if (selectedDappId) {
-        const selected = data.dapps.find((item) => item.id === selectedDappId);
-        if (selected) {
-          setDappForm({
-            id: selected.id,
-            name: selected.name,
-            description: selected.description,
-            categories: selected.categories,
-            order: selected.order,
-            url: selected.url,
-            icon: selected.icon,
-            featured: Boolean(selected.featured),
-          });
-        }
-      }
+      setDappTabs(data.tabs.slice().sort((a, b) => a.order - b.order));
+      setTabDrafts(data.tabs.slice().sort((a, b) => a.order - b.order));
+      setToolDefinitions(data.tools);
     } catch (nextError) {
       setDapps([]);
       setError(nextError instanceof Error ? nextError.message : 'Failed to load dapps');
     } finally {
-      setDappsLoading(false);
+      setLoading(false);
     }
   }
 
-  function handleConnect() {
+  function connectAdmin() {
     window.localStorage.setItem(ADMIN_KEY_STORAGE, adminKeyInput);
-    setSuccess('Admin key saved.');
-    setCurrentPage(1);
     setActiveAdminKey(adminKeyInput);
+    setPage(1);
+    setSuccess('Admin key saved.');
   }
 
-  function handleSearch() {
-    setCurrentPage(1);
-    if (activeModule === 'users') {
-      setUserSubview('list');
-    }
-    setError(null);
+  function runSearch() {
     setQuery(queryInput.trim());
+    setPage(1);
+    setError(null);
   }
 
-  function handleResetSearch() {
+  function resetSearch() {
     setQueryInput('');
     setQuery('');
-    setCurrentPage(1);
-    if (activeModule === 'users') {
-      setUserSubview('list');
-    }
+    setPage(1);
     setError(null);
   }
 
-  function handleModuleChange(module: ModuleKey) {
-    setActiveModule(module);
-    setCurrentPage(1);
-    setQuery('');
-    setQueryInput('');
-    setError(null);
-    setSuccess(null);
-    if (module === 'users') {
-      setUserSubview('list');
-      return;
-    }
-    if (module === 'dapps') {
-      setFocusedUser(null);
-      setUserDetail(null);
-      return;
-    }
-    setUserDetail(null);
+  function openUserDetail(user: AdminUserRow) {
+    setSelectedUser(user);
+    setUserTab('overview');
+    setSelectedWalletAddress(null);
+    setWalletDetail(null);
   }
 
-  function editDapp(dapp: AdminDAppRow) {
-    setSelectedDappId(dapp.id);
-    setDappForm({
-      id: dapp.id,
-      name: dapp.name,
-      description: dapp.description,
-      categories: dapp.categories,
-      order: dapp.order,
-      url: dapp.url,
-      icon: dapp.icon,
-      featured: Boolean(dapp.featured),
-    });
-    setDappModalOpen(true);
-    setError(null);
-    setSuccess(null);
-  }
-
-  function resetDappForm() {
-    setSelectedDappId(null);
-    setDappForm(EMPTY_DAPP_FORM);
-    setError(null);
-    setSuccess(null);
-  }
-
-  function openCreateDappModal() {
-    resetDappForm();
-    setDappForm((current) => ({
-      ...current,
-      categories: dappTabs[0]?.id ? [dappTabs[0].id] : [],
-    }));
-    setDappModalOpen(true);
-  }
-
-  function closeDappModal() {
-    setDappModalOpen(false);
-  }
-
-  function openTabsModal() {
-    setTabDrafts(dappTabs.slice().sort((left, right) => left.order - right.order));
-    setTabsModalOpen(true);
-  }
-
-  function closeTabsModal() {
-    setTabsModalOpen(false);
-  }
-
-  function addTabDraft() {
-    setTabDrafts((current) => [
-      ...current,
-      {
-        id: `tab-${Date.now()}`,
-        label: '',
-        order: current.length,
-        enabled: true,
-      },
-    ]);
-  }
-
-  function removeTabDraft(tabId: string) {
-    setTabDrafts((current) => current.filter((item) => item.id !== tabId));
-  }
-
-  async function openUserSubview(user: AdminUserRow, view: Exclude<UserSubview, 'list'>) {
-    setFocusedUser(user);
-    setUserSubview(view);
-    setUserDetail(null);
-    await loadUserDetail(user.id, activeAdminKey);
-  }
-
-  function backToUsers() {
-    setUserSubview('list');
-    setUserDetail(null);
-  }
-
-  async function handleBalanceSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function saveNinjaBalance(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!focusedUser || !activeAdminKey) return;
-
+    if (!selectedUser || !activeAdminKey) return;
     const amount = Number(balanceAmount);
     if (!Number.isFinite(amount)) {
-      setError('Please enter a valid NINJA amount.');
+      setError('Please enter a valid amount.');
       return;
     }
-
-    setSubmitting(true);
+    setSaving(true);
     setError(null);
-    setSuccess(null);
-
     try {
       const result = await adjustUserBalance({
         adminKey: activeAdminKey,
-        userId: focusedUser.id,
+        userId: selectedUser.id,
         amount,
         mode: balanceMode,
         reason: balanceReason,
@@ -433,97 +403,130 @@ export default function HomePage() {
       setBalanceAmount('');
       setBalanceReason('');
       await loadUsers();
-      await loadUserDetail(focusedUser.id, activeAdminKey);
+      await loadUserDetail(selectedUser.id, activeAdminKey);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to update balance');
+      setError(nextError instanceof Error ? nextError.message : 'Failed to adjust balance');
     } finally {
-      setSubmitting(false);
+      setSaving(false);
     }
   }
 
-  async function handleDappSave(event: React.FormEvent<HTMLFormElement>) {
+  function editDapp(row: AdminDAppRow) {
+    const normalizedCategories = stripAiDrivenCategories(row.categories, dappTabs);
+    setSelectedDappId(row.id);
+    setDappForm({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      categories: normalizedCategories,
+      primaryCategory: normalizedCategories.includes(row.primaryCategory ?? '')
+        ? row.primaryCategory
+        : undefined,
+      toolIds: row.toolIds ?? [],
+      aiDriven: Boolean(row.aiDriven),
+      order: row.order,
+      url: row.url,
+      icon: row.icon,
+      featured: Boolean(row.featured),
+      aiPrompt: row.aiPrompt ?? '',
+      aiPromptVersion: row.aiPromptVersion ?? 'v1',
+      mentionPrompt: row.mentionPrompt ?? '',
+      mentionLabel: row.mentionLabel ?? '',
+      mentionThemeKey: row.mentionThemeKey ?? '',
+    });
+    setDappModalOpen(true);
+  }
+
+  function selectDapp(row: AdminDAppRow) {
+    setSelectedDappId(row.id);
+  }
+
+  function openNewDappModal() {
+    setSelectedDappId(null);
+    const defaultCategory = dappTabs.find((tab) => !isAiDrivenTab(tab))?.id;
+    setDappForm({
+      ...EMPTY_DAPP_FORM,
+      categories: defaultCategory ? [defaultCategory] : [],
+    });
+    setDappModalOpen(true);
+  }
+
+  async function saveDapp(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!activeAdminKey) {
-      setError('Please enter admin key first.');
-      return;
-    }
-
-    if (sortedDappTabs.length === 0) {
-      setError('Create tabs first in Manage Tabs before saving a dapp.');
-      return;
-    }
-
-    if (
-      !dappForm.name.trim() ||
-      !dappForm.url.trim() ||
-      !dappForm.icon.trim() ||
-      dappForm.categories.length === 0
-    ) {
-      setError('Name, at least one category, URL and icon are required.');
-      return;
-    }
-
-    if (!Number.isFinite(dappForm.order)) {
-      setError('Please enter a valid DApp order.');
-      return;
-    }
-
-    setSavingDapp(true);
+    if (!activeAdminKey) return;
+    setSaving(true);
     setError(null);
-    setSuccess(null);
-
     try {
-      const saved = await saveAdminDapp({
+      await saveAdminDapp({
         adminKey: activeAdminKey,
         id: dappForm.id,
         name: dappForm.name,
         description: dappForm.description,
-        categories: dappForm.categories,
+        categories: stripAiDrivenCategories(dappForm.categories, dappTabs),
+        primaryCategory: dappForm.primaryCategory,
+        toolIds: dappForm.aiDriven ? dappForm.toolIds : [],
+        aiDriven: dappForm.aiDriven,
         order: dappForm.order,
         url: dappForm.url,
         icon: dappForm.icon,
         featured: dappForm.featured,
+        aiPrompt: dappForm.aiPrompt,
+        aiPromptVersion: dappForm.aiPromptVersion,
+        mentionPrompt: dappForm.mentionPrompt,
+        mentionLabel: dappForm.mentionLabel,
+        mentionThemeKey: dappForm.mentionThemeKey,
       });
-
-      setSelectedDappId(saved.id);
-      setDappForm({
-        id: saved.id,
-        name: saved.name,
-        description: saved.description,
-        categories: saved.categories,
-        order: saved.order,
-        url: saved.url,
-        icon: saved.icon,
-        featured: Boolean(saved.featured),
-      });
-      setSuccess(`DApp ${dappForm.id ? 'updated' : 'created'} successfully.`);
-      await loadDapps(activeAdminKey, query);
+      setSuccess(`DApp ${selectedDappId ? 'updated' : 'created'} successfully.`);
       setDappModalOpen(false);
+      await loadDapps();
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Failed to save dapp');
     } finally {
-      setSavingDapp(false);
+      setSaving(false);
     }
   }
 
-  async function handleDappImageChange(event: React.ChangeEvent<HTMLInputElement>) {
+  async function saveTabs(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeAdminKey) return;
+    const normalized = tabDrafts
+      .map((tab, index) => ({
+        ...tab,
+        id: normalizeTabId(tab.id),
+        label: tab.label.trim(),
+        order: Number.isFinite(tab.order) ? tab.order : index,
+      }))
+      .filter((tab) => tab.id && tab.label)
+      .sort((a, b) => a.order - b.order);
+
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await saveAdminDappTabs({
+        adminKey: activeAdminKey,
+        tabs: normalized,
+      });
+      const sortedTabs = result.tabs.slice().sort((a, b) => a.order - b.order);
+      setDappTabs(sortedTabs);
+      setTabDrafts(sortedTabs);
+      setTabsModalOpen(false);
+      setSuccess('Tabs updated successfully.');
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'Failed to save tabs');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function uploadDappImage(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file || !activeAdminKey) return;
 
     setUploadingImage(true);
     setError(null);
-    setSuccess(null);
-
     try {
-      const result = await uploadAdminDappImage({
-        adminKey: activeAdminKey,
-        file,
-      });
-
-      setDappForm((current) => ({
-        ...current,
-        icon: result.publicUrl,
-      }));
+      const result = await uploadAdminDappImage({ adminKey: activeAdminKey, file });
+      setDappForm((prev) => ({ ...prev, icon: result.publicUrl }));
       setSuccess('Image uploaded successfully.');
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Failed to upload image');
@@ -533,998 +536,911 @@ export default function HomePage() {
     }
   }
 
-  async function handleTabsSave(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!activeAdminKey) {
-      setError('Please enter admin key first.');
-      return;
-    }
-
-    const normalizedTabs = tabDrafts
-      .map((tab, index) => ({
-        ...tab,
-        id: normalizeTabId(tab.id),
-        label: tab.label.trim(),
-        order: Number.isFinite(tab.order) ? tab.order : index,
-      }))
-      .filter((tab) => tab.id && tab.label)
-      .sort((left, right) => left.order - right.order);
-
-    if (normalizedTabs.length === 0) {
-      setError('Please keep at least one valid tab.');
-      return;
-    }
-
-    const ids = normalizedTabs.map((tab) => tab.id);
-    if (new Set(ids).size !== ids.length) {
-      setError('Tab ids must be unique.');
-      return;
-    }
-
-    setSubmitting(true);
-    setError(null);
-    setSuccess(null);
-
-    try {
-      const result = await saveAdminDappTabs({
-        adminKey: activeAdminKey,
-        tabs: normalizedTabs,
-      });
-      const sortedTabs = result.tabs.slice().sort((left, right) => left.order - right.order);
-      setDappTabs(sortedTabs);
-      setTabDrafts(sortedTabs);
-      setSuccess('Tabs updated successfully.');
-      setTabsModalOpen(false);
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to save tabs');
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  const totalPages = getPageCount(totalUsers, pageSize);
-  const totalCredentialPages = getPageCount(totalCredentials, pageSize);
-  const selectedDapp = selectedDappId ? dapps.find((item) => item.id === selectedDappId) ?? null : null;
-  const sortedDappTabs = dappTabs.slice().sort((left, right) => left.order - right.order);
-  const categoryLabelMap = useMemo(
-    () =>
-      Object.fromEntries(
-        sortedDappTabs.map((tab) => [tab.id, tab.label]),
-      ) as Record<string, string>,
-    [sortedDappTabs],
+  const selectedDapp = selectedDappId
+    ? dapps.find((item) => item.id === selectedDappId) ?? null
+    : null;
+  const pageCount = getPageCount(totalUsers, PAGE_SIZE);
+  const walletPageCount = getPageCount(walletsTotal, PAGE_SIZE);
+  const displayedChanceBuyers = users.filter(
+    (item) => (item.chancePurchaseCount ?? 0) > 0,
+  ).length;
+  const displayedWallets = users.reduce(
+    (sum, item) => sum + (item.aiWalletCount ?? 0),
+    0,
+  );
+  const displayedRounds = users.reduce(
+    (sum, item) => sum + (item.aiRoundCount ?? 0),
+    0,
   );
 
-  const breadcrumb = useMemo(() => {
-    if (activeModule === 'passkey-credentials') {
-      return ['Passkey Credentials'];
-    }
-    if (activeModule === 'dapps') {
-      return selectedDapp ? ['DApps', selectedDapp.name] : ['DApps'];
-    }
-    const items = ['Users'];
-    if (focusedUser && userSubview !== 'list') {
-      items.push(`#${focusedUser.id}`);
-      items.push(userSubview === 'ai' ? 'AI Usage' : 'NINJA');
-    }
-    return items;
-  }, [activeModule, focusedUser, selectedDapp, userSubview]);
-
-  function renderUsersTable() {
-    return (
-      <section className={styles.panel}>
-        <div className={styles.panelHeader}>
-          <div>
-            <h2>Users</h2>
-            <p>Total {totalUsers}</p>
-          </div>
-        </div>
-
-        <div className={styles.searchBar}>
-          <input
-            className={styles.input}
-            value={queryInput}
-            onChange={(event) => setQueryInput(event.target.value)}
-            placeholder="Search by user id, invite code, credential or wallet"
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') handleSearch();
-            }}
-          />
-          <button className={styles.secondaryButton} type="button" onClick={handleResetSearch}>
-            Reset
-          </button>
-          <button className={styles.primaryButton} type="button" onClick={handleSearch}>
-            Search
-          </button>
-        </div>
-
-        <div className={styles.tableWrap}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th>User</th>
-                <th>Wallet Address</th>
-                <th>Invite Code</th>
-                <th>Invited By</th>
-                <th>NINJA</th>
-                <th>AI Requests</th>
-                <th>Last AI</th>
-                <th>Created At</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {usersLoading ? (
-                <tr>
-                  <td colSpan={9} className={styles.emptyCell}>Loading...</td>
-                </tr>
-              ) : users.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className={styles.emptyCell}>No users found.</td>
-                </tr>
-              ) : (
-                users.map((user) => (
-                  <tr key={user.id}>
-                    <td>
-                      <div className={styles.userCell}>
-                        <div className={styles.userName}>#{user.id} {user.walletName || 'Unnamed User'}</div>
-                        <div className={styles.userSub}>{user.credentialId}</div>
-                      </div>
-                    </td>
-                    <td className={styles.fullAddress}>{user.walletAddress || '-'}</td>
-                    <td>{user.inviteCode}</td>
-                    <td>{user.invitedBy || '-'}</td>
-                    <td>{formatNumber(user.ninjaBalance)}</td>
-                    <td>{formatNumber(user.aiUsage.totalRequests)}</td>
-                    <td>{formatDate(user.aiUsage.lastUsedAt)}</td>
-                    <td>{formatDate(user.createdAt)}</td>
-                    <td>
-                      <div className={styles.actionGroup}>
-                        <button
-                          className={styles.secondaryButton}
-                          type="button"
-                          onClick={() => void openUserSubview(user, 'ai')}
-                        >
-                          AI Usage
-                        </button>
-                        <button
-                          className={styles.primaryGhostButton}
-                          type="button"
-                          onClick={() => void openUserSubview(user, 'ninja')}
-                        >
-                          NINJA
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <div className={styles.paginationBar}>
-          <div className={styles.paginationMeta}>
-            {totalUsers === 0 ? '0 results' : `${(currentPage - 1) * pageSize + 1}-${Math.min(currentPage * pageSize, totalUsers)} / ${totalUsers}`}
-          </div>
-          <div className={styles.paginationControls}>
-            <select
-              className={styles.select}
-              value={String(pageSize)}
-              onChange={(event) => {
-                setCurrentPage(1);
-                setPageSize(Number(event.target.value));
-              }}
-            >
-              <option value="10">10 / page</option>
-              <option value="20">20 / page</option>
-              <option value="50">50 / page</option>
-            </select>
-            <button
-              className={styles.secondaryButton}
-              type="button"
-              disabled={currentPage <= 1}
-              onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
-            >
-              Prev
-            </button>
-            <span className={styles.pageIndicator}>
-              {currentPage} / {totalPages}
-            </span>
-            <button
-              className={styles.secondaryButton}
-              type="button"
-              disabled={currentPage >= totalPages}
-              onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
-            >
-              Next
-            </button>
-          </div>
-        </div>
-      </section>
-    );
-  }
-
-  function renderAiUsage() {
-    if (detailLoading) {
-      return <div className={styles.panel}><div className={styles.emptyCell}>Loading...</div></div>;
-    }
-
-    if (!userDetail || !focusedUser) {
-      return <div className={styles.panel}><div className={styles.emptyCell}>No user selected.</div></div>;
-    }
-
-    return (
-      <div className={styles.stack}>
-        <section className={styles.panel}>
-          <div className={styles.panelHeader}>
-            <div>
-              <h2>AI Usage for #{focusedUser.id}</h2>
-              <p>{focusedUser.walletName || focusedUser.walletAddress || 'Unnamed User'}</p>
-            </div>
-            <button className={styles.secondaryButton} type="button" onClick={backToUsers}>
-              Back to Users
-            </button>
-          </div>
-
-          <div className={styles.statsGrid}>
-            <div className={styles.statCard}><span>Total Requests</span><strong>{formatNumber(userDetail.aiUsage.totalRequests)}</strong></div>
-            <div className={styles.statCard}><span>Input Tokens</span><strong>{formatNumber(userDetail.aiUsage.totalInputTokens)}</strong></div>
-            <div className={styles.statCard}><span>Output Tokens</span><strong>{formatNumber(userDetail.aiUsage.totalOutputTokens)}</strong></div>
-            <div className={styles.statCard}><span>Total NINJA Cost</span><strong>{formatNumber(userDetail.aiUsage.totalCostNinja, 4)}</strong></div>
-          </div>
-        </section>
-
-        <section className={styles.panel}>
-          <div className={styles.panelHeader}><div><h2>Recent AI Logs</h2></div></div>
-          {userDetail.aiLogs.length === 0 ? (
-            <div className={styles.emptyCell}>No AI usage yet.</div>
-          ) : (
-            <div className={styles.list}>
-              {userDetail.aiLogs.map((log) => (
-                <article key={log.id} className={styles.listItem}>
-                  <div>
-                    <div className={styles.itemTitle}>{log.model}</div>
-                    <div className={styles.itemSub}>{formatDate(log.createdAt)}</div>
-                  </div>
-                  <div className={styles.itemMeta}>
-                    <span>In {formatNumber(log.inputTokens)}</span>
-                    <span>Out {formatNumber(log.outputTokens)}</span>
-                    <span>{formatNumber(log.costNinja, 4)} NINJA</span>
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
-      </div>
-    );
-  }
-
-  function renderPasskeyCredentialsTable() {
-    return (
-      <section className={styles.panel}>
-        <div className={styles.panelHeader}>
-          <div>
-            <h2>Passkey Credentials</h2>
-            <p>Total {totalCredentials}</p>
-          </div>
-        </div>
-
-        <div className={styles.searchBar}>
-          <input
-            className={styles.input}
-            value={queryInput}
-            onChange={(event) => setQueryInput(event.target.value)}
-            placeholder="Search by credential id, user id, wallet or wallet name"
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') handleSearch();
-            }}
-          />
-          <button className={styles.secondaryButton} type="button" onClick={handleResetSearch}>
-            Reset
-          </button>
-          <button className={styles.primaryButton} type="button" onClick={handleSearch}>
-            Search
-          </button>
-        </div>
-
-        <div className={styles.tableWrap}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Credential ID</th>
-                <th>User ID</th>
-                <th>Wallet Name</th>
-                <th>Wallet Address</th>
-                <th>Counter</th>
-                <th>Created At</th>
-                <th>Updated At</th>
-              </tr>
-            </thead>
-            <tbody>
-              {usersLoading ? (
-                <tr>
-                  <td colSpan={8} className={styles.emptyCell}>Loading...</td>
-                </tr>
-              ) : credentials.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className={styles.emptyCell}>No credentials found.</td>
-                </tr>
-              ) : (
-                credentials.map((credential) => (
-                  <tr key={credential.id}>
-                    <td>{credential.id}</td>
-                    <td className={styles.fullAddress}>{credential.credentialId}</td>
-                    <td>{credential.userId || '-'}</td>
-                    <td>{credential.walletName || '-'}</td>
-                    <td className={styles.fullAddress}>{credential.walletAddress || '-'}</td>
-                    <td>{credential.counter}</td>
-                    <td>{formatDate(credential.createdAt)}</td>
-                    <td>{formatDate(credential.updatedAt)}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <div className={styles.paginationBar}>
-          <div className={styles.paginationMeta}>
-            {totalCredentials === 0 ? '0 results' : `${(currentPage - 1) * pageSize + 1}-${Math.min(currentPage * pageSize, totalCredentials)} / ${totalCredentials}`}
-          </div>
-          <div className={styles.paginationControls}>
-            <select
-              className={styles.select}
-              value={String(pageSize)}
-              onChange={(event) => {
-                setCurrentPage(1);
-                setPageSize(Number(event.target.value));
-              }}
-            >
-              <option value="10">10 / page</option>
-              <option value="20">20 / page</option>
-              <option value="50">50 / page</option>
-            </select>
-            <button
-              className={styles.secondaryButton}
-              type="button"
-              disabled={currentPage <= 1}
-              onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
-            >
-              Prev
-            </button>
-            <span className={styles.pageIndicator}>
-              {currentPage} / {totalCredentialPages}
-            </span>
-            <button
-              className={styles.secondaryButton}
-              type="button"
-              disabled={currentPage >= totalCredentialPages}
-              onClick={() => setCurrentPage((page) => Math.min(totalCredentialPages, page + 1))}
-            >
-              Next
-            </button>
-          </div>
-        </div>
-      </section>
-    );
-  }
-
-  function renderNinja() {
-    if (detailLoading) {
-      return <div className={styles.panel}><div className={styles.emptyCell}>Loading...</div></div>;
-    }
-
-    if (!userDetail || !focusedUser) {
-      return <div className={styles.panel}><div className={styles.emptyCell}>No user selected.</div></div>;
-    }
-
-    return (
-      <div className={styles.stack}>
-        <section className={styles.panel}>
-          <div className={styles.panelHeader}>
-            <div>
-              <h2>NINJA for #{focusedUser.id}</h2>
-              <p>{focusedUser.walletName || focusedUser.walletAddress || 'Unnamed User'}</p>
-            </div>
-            <button className={styles.secondaryButton} type="button" onClick={backToUsers}>
-              Back to Users
-            </button>
-          </div>
-
-          <div className={styles.detailGrid}>
-            <div className={styles.detailItem}><span>User</span><strong>{focusedUser.walletName || `#${focusedUser.id}`}</strong></div>
-            <div className={styles.detailItem}><span>Wallet</span><strong className={styles.fullAddress}>{focusedUser.walletAddress || '-'}</strong></div>
-            <div className={styles.detailItem}><span>Current Balance</span><strong>{formatNumber(userDetail.user.ninjaBalance)}</strong></div>
-            <div className={styles.detailItem}><span>Invite Code</span><strong>{focusedUser.inviteCode}</strong></div>
-          </div>
-        </section>
-
-        <section className={styles.panel}>
-          <div className={styles.panelHeader}><div><h2>Adjust NINJA Balance</h2></div></div>
-          <form className={styles.form} onSubmit={handleBalanceSubmit}>
-            <div className={styles.formGrid}>
-              <label className={styles.field}>
-                <span>Mode</span>
-                <select className={styles.select} value={balanceMode} onChange={(event) => setBalanceMode(event.target.value as 'set' | 'increment')}>
-                  <option value="increment">Increment</option>
-                  <option value="set">Set Balance</option>
-                </select>
-              </label>
-              <label className={styles.field}>
-                <span>Amount</span>
-                <input
-                  className={styles.input}
-                  value={balanceAmount}
-                  onChange={(event) => setBalanceAmount(event.target.value)}
-                  placeholder="Amount"
-                />
-              </label>
-            </div>
-            <label className={styles.field}>
-              <span>Reason</span>
-              <input
-                className={styles.input}
-                value={balanceReason}
-                onChange={(event) => setBalanceReason(event.target.value)}
-                placeholder="Reason"
-              />
-            </label>
-            <button className={styles.primaryButton} type="submit" disabled={submitting}>
-              {submitting ? 'Saving...' : 'Save'}
-            </button>
-          </form>
-        </section>
-
-        <section className={styles.panel}>
-          <div className={styles.panelHeader}><div><h2>Recent Transactions</h2></div></div>
-          {userDetail.transactions.length === 0 ? (
-            <div className={styles.emptyCell}>No transactions yet.</div>
-          ) : (
-            <div className={styles.list}>
-              {userDetail.transactions.map((tx) => (
-                <article key={tx.id} className={styles.listItem}>
-                  <div>
-                    <div className={styles.itemTitle}>{tx.type}</div>
-                    <div className={styles.itemSub}>{formatDate(tx.createdAt)}</div>
-                  </div>
-                  <div className={styles.itemMeta}>
-                    <span>{formatNumber(tx.amount, 4)}</span>
-                    <span>After {formatNumber(tx.balanceAfter)}</span>
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
-      </div>
-    );
-  }
-
-  function renderDappsManager() {
-    return (
-      <div className={styles.stack}>
-        <section className={styles.panel}>
-          <div className={styles.panelHeader}>
-            <div>
-              <h2>DApps</h2>
-              <p>Total {dapps.length}</p>
-            </div>
-            <div className={styles.actionGroup}>
-              <button className={styles.secondaryButton} type="button" onClick={openTabsModal}>
-                Manage Tabs
-              </button>
-              <button className={styles.secondaryButton} type="button" onClick={openCreateDappModal}>
-                New DApp
-              </button>
-            </div>
-          </div>
-
-          <div className={styles.searchBar}>
-            <input
-              className={styles.input}
-              value={queryInput}
-              onChange={(event) => setQueryInput(event.target.value)}
-              placeholder="Search by name, description, URL or category"
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') handleSearch();
-              }}
-            />
-            <button className={styles.secondaryButton} type="button" onClick={handleResetSearch}>
-              Reset
-            </button>
-            <button className={styles.primaryButton} type="button" onClick={handleSearch}>
-              Search
-            </button>
-          </div>
-
-          <div className={styles.tableWrap}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Order</th>
-                  <th>Categories</th>
-                  <th>Link</th>
-                  <th>Icon</th>
-                  <th>Featured</th>
-                  <th>Updated At</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dappsLoading ? (
-                  <tr>
-                    <td colSpan={8} className={styles.emptyCell}>Loading...</td>
-                  </tr>
-                ) : dapps.length === 0 ? (
-                  <tr>
-                    <td colSpan={8} className={styles.emptyCell}>No dapps found.</td>
-                  </tr>
-                ) : (
-                  dapps.map((dapp) => (
-                    <tr key={dapp.id}>
-                      <td>
-                        <div className={styles.userCell}>
-                          <div className={styles.userName}>{dapp.name}</div>
-                          <div className={styles.userSub}>{dapp.description}</div>
-                        </div>
-                      </td>
-                      <td>{dapp.order}</td>
-                      <td>
-                        {(dapp.categories.length > 0 ? dapp.categories : ['-'])
-                          .map((category) => categoryLabelMap[category] || category)
-                          .join(', ')}
-                      </td>
-                      <td className={styles.fullAddress}>{dapp.url}</td>
-                      <td>
-                        <div className={styles.iconCell}>
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={resolveDappIcon(dapp.icon)} alt={dapp.name} className={styles.iconThumb} />
-                          <div className={styles.userSub}>{dapp.icon}</div>
-                        </div>
-                      </td>
-                      <td>{dapp.featured ? 'Yes' : 'No'}</td>
-                      <td>{formatDate(dapp.updatedAt)}</td>
-                      <td>
-                        <div className={styles.actionGroup}>
-                          <button className={styles.secondaryButton} type="button" onClick={() => editDapp(dapp)}>
-                            Edit
-                          </button>
-                          <a
-                            className={styles.linkButton}
-                            href={dapp.url}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Open
-                          </a>
-                        </div>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </div>
-    );
-  }
+  const userBreadCrumbs = breadcrumbs({
+    module,
+    user: selectedUser,
+    userTab,
+    walletAddress: selectedWalletAddress,
+    dapp: selectedDapp,
+  });
+  const hasSelectedUser = Boolean(selectedUser);
+  const usersPanelTitle = hasSelectedUser ? `User #${selectedUser?.id}` : 'Users';
+  const usersPanelSubtitle = hasSelectedUser
+    ? (selectedUser?.walletName || selectedUser?.walletAddress || '')
+    : `Total ${totalUsers}`;
+  const sortedUsers = useMemo(() => users, [users]);
 
   return (
     <div className={styles.page}>
-      <header className={styles.header}>
-        <div>
-          <h1>INJ Admin Panel</h1>
-          <p>Module-based admin dashboard</p>
-        </div>
-        <div className={styles.headerActions}>
-          <input
-            className={styles.input}
-            type="password"
-            value={adminKeyInput}
-            onChange={(event) => setAdminKeyInput(event.target.value)}
-            placeholder="Admin key"
-          />
-          <button className={styles.primaryButton} type="button" onClick={handleConnect}>
-            Connect
-          </button>
-        </div>
-      </header>
-
-      <div className={styles.layout}>
+      <div className={styles.shell}>
         <aside className={styles.sidebar}>
-          <section className={styles.panel}>
-            <div className={styles.panelHeader}><div><h2>Modules</h2></div></div>
-            <div className={styles.moduleList}>
-              <div className={`${styles.moduleButton} ${styles.moduleButtonActive}`}>
-                <button
-                  type="button"
-                  className={`${styles.moduleSwitch} ${activeModule === 'users' ? styles.moduleSwitchActive : ''}`}
-                  onClick={() => handleModuleChange('users')}
-                >
-                  <span className={styles.moduleTitle}>Users</span>
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.moduleSwitch} ${activeModule === 'passkey-credentials' ? styles.moduleSwitchActive : ''}`}
-                  onClick={() => handleModuleChange('passkey-credentials')}
-                >
-                  <span className={styles.moduleTitle}>Passkey Credentials</span>
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.moduleSwitch} ${activeModule === 'dapps' ? styles.moduleSwitchActive : ''}`}
-                  onClick={() => handleModuleChange('dapps')}
-                >
-                  <span className={styles.moduleTitle}>DApps</span>
-                </button>
-              </div>
-            </div>
-          </section>
+          <div className={styles.sidebarBrand}>
+            <h1>INJ Admin</h1>
+            <p>Control Center</p>
+          </div>
 
-          <section className={styles.panel}>
-            <div className={styles.panelHeader}><div><h2>Context</h2></div></div>
-            <div className={styles.contextList}>
-              <div className={styles.contextItem}>
-                <span>Module</span>
-                <strong>
-                  {activeModule === 'users'
-                    ? 'Users'
-                    : activeModule === 'passkey-credentials'
-                      ? 'Passkey Credentials'
-                      : 'DApps'}
-                </strong>
-              </div>
-              <div className={styles.contextItem}>
-                <span>Page</span>
-                <strong>{currentPage}</strong>
-              </div>
-              <div className={styles.contextItem}>
-                <span>Page Size</span>
-                <strong>{pageSize}</strong>
-              </div>
-              <div className={styles.contextItem}>
-                <span>{activeModule === 'dapps' ? 'Selected DApp' : 'Focused User'}</span>
-                {activeModule === 'users' && focusedUser ? (
-                  <div className={styles.focusedUserBlock}>
-                    <strong>#{focusedUser.id} {focusedUser.walletName || 'Unnamed User'}</strong>
-                    <div className={styles.contextSub}>Invite Code: {focusedUser.inviteCode}</div>
-                    <div className={styles.contextSub}>NINJA: {formatNumber(focusedUser.ninjaBalance)}</div>
-                    <div className={styles.contextSub}>Wallet Address:</div>
-                    <div className={styles.fullAddress}>{focusedUser.walletAddress || '-'}</div>
-                  </div>
-                ) : activeModule === 'passkey-credentials' ? (
-                  <div className={styles.contextSub}>Viewing passkey credential records</div>
-                ) : activeModule === 'dapps' && selectedDapp ? (
-                  <div className={styles.focusedUserBlock}>
-                    <strong>{selectedDapp.name}</strong>
-                    <div className={styles.contextSub}>
-                      Categories: {selectedDapp.categories.map((category) => categoryLabelMap[category] || category).join(', ') || '-'}
-                    </div>
-                    <div className={styles.contextSub}>Featured: {selectedDapp.featured ? 'Yes' : 'No'}</div>
-                    <div className={styles.contextSub}>Link:</div>
-                    <div className={styles.fullAddress}>{selectedDapp.url}</div>
-                  </div>
-                ) : activeModule === 'dapps' ? (
-                  <div className={styles.contextSub}>Managing discover dapp content</div>
-                ) : (
-                  <div className={styles.contextSub}>None</div>
-                )}
-              </div>
+          <div className={styles.sidebarSection}>
+            <span className={styles.sidebarLabel}>Navigation</span>
+            <button
+              type="button"
+              className={`${styles.sidebarNavItem} ${module === 'users' ? styles.sidebarNavItemActive : ''}`}
+              onClick={() => {
+                setModule('users');
+                setSelectedDappId(null);
+              }}
+            >
+              Users
+            </button>
+            <button
+              type="button"
+              className={`${styles.sidebarNavItem} ${module === 'dapps' ? styles.sidebarNavItemActive : ''}`}
+              onClick={() => {
+                setModule('dapps');
+                setSelectedUser(null);
+              }}
+            >
+              DApps
+            </button>
+          </div>
+
+          <div className={styles.sidebarFooter}>
+            <span className={styles.sidebarLabel}>Admin Key</span>
+            <div className={styles.sidebarKeyRow}>
+              <input
+                className={styles.input}
+                type="password"
+                value={adminKeyInput}
+                placeholder="Admin key"
+                onChange={(event) => setAdminKeyInput(event.target.value)}
+              />
+              <button className={styles.primaryButton} onClick={connectAdmin} type="button">
+                Connect
+              </button>
             </div>
-          </section>
+          </div>
         </aside>
 
-        <main className={styles.content}>
+        <main className={styles.main}>
+          <header className={styles.mainHeader}>
+            <div>
+              <h2>{module === 'users' ? 'User Operations' : 'DApp Operations'}</h2>
+              <p>
+                {module === 'users'
+                  ? 'Inspect users, AI wallets, NINJA and chance activity'
+                  : 'Manage dapps, tabs and AI-driven tool binding'}
+              </p>
+            </div>
+            <section className={styles.breadcrumbWrap}>
+              {userBreadCrumbs.map((item, index) => (
+                <span key={`${item}-${index}`} className={styles.breadcrumbItem}>
+                  {index > 0 ? <span className={styles.breadcrumbSep}>/</span> : null}
+                  {item}
+                </span>
+              ))}
+            </section>
+          </header>
+
           {error ? <div className={styles.alertError}>{error}</div> : null}
           {success ? <div className={styles.alertSuccess}>{success}</div> : null}
 
-          <section className={styles.panel}>
-            <div className={styles.breadcrumb}>
-              {breadcrumb.map((item, index) => (
-                <span key={`${item}-${index}`} className={styles.breadcrumbItem}>
-                  {index > 0 ? <span className={styles.breadcrumbSep}>/</span> : null}
-                  <span>{item}</span>
-                </span>
-              ))}
-            </div>
-          </section>
-
-          {activeModule === 'users' && userSubview === 'list' ? renderUsersTable() : null}
-          {activeModule === 'users' && userSubview === 'ai' ? renderAiUsage() : null}
-          {activeModule === 'users' && userSubview === 'ninja' ? renderNinja() : null}
-          {activeModule === 'passkey-credentials' ? renderPasskeyCredentialsTable() : null}
-          {activeModule === 'dapps' ? renderDappsManager() : null}
-        </main>
-      </div>
-
-      {activeModule === 'dapps' && dappModalOpen ? (
-        <div className={styles.modalOverlay} onClick={closeDappModal}>
-          <div className={styles.modal} onClick={(event) => event.stopPropagation()}>
-            <div className={styles.modalHeader}>
-              <div>
-                <h2>{selectedDappId ? `Edit DApp #${selectedDappId}` : 'Create DApp'}</h2>
-                <p>Manage the discover page listing stored in Redis.</p>
-              </div>
-              <button className={styles.secondaryButton} type="button" onClick={closeDappModal}>
-                Close
-              </button>
-            </div>
-
-            <form className={styles.form} onSubmit={handleDappSave}>
-              <div className={styles.modalBody}>
-                {error ? <div className={styles.alertError}>{error}</div> : null}
-                {success ? <div className={styles.alertSuccess}>{success}</div> : null}
-
-                <div className={styles.formGrid}>
-                  <label className={styles.field}>
-                    <span>Name</span>
-                    <input
-                      className={styles.input}
-                      value={dappForm.name}
-                      onChange={(event) => setDappForm((current) => ({ ...current, name: event.target.value }))}
-                      placeholder="DApp name"
-                    />
-                  </label>
-                  <label className={styles.field}>
-                    <span>Categories</span>
-                    {sortedDappTabs.length > 0 ? (
-                      <div className={styles.categoryGrid}>
-                        {sortedDappTabs.map((tab) => {
-                          const checked = dappForm.categories.includes(tab.id);
-                          return (
-                            <label key={tab.id} className={styles.categoryOption}>
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={(event) =>
-                                  setDappForm((current) => ({
-                                    ...current,
-                                    categories: event.target.checked
-                                      ? Array.from(new Set([...current.categories, tab.id]))
-                                      : current.categories.filter((item) => item !== tab.id),
-                                  }))
-                                }
-                              />
-                              <span>{tab.label}</span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    ) : dappForm.categories.length > 0 ? (
-                      <div className={styles.inlineMeta}>
-                        Current categories: {dappForm.categories.join(', ')}
-                      </div>
-                    ) : (
-                      <div className={styles.inlineMeta}>Create tabs first in Manage Tabs.</div>
-                    )}
-                  </label>
+          {module === 'users' ? (
+            <>
+              <section className={styles.kpiRow}>
+                <article className={styles.kpiCard}>
+                  <span>Total Users</span>
+                  <strong>{formatNumber(totalUsers, 0)}</strong>
+                </article>
+                <article className={styles.kpiCard}>
+                  <span>Chance Buyers (current page)</span>
+                  <strong>{formatNumber(displayedChanceBuyers, 0)}</strong>
+                </article>
+                <article className={styles.kpiCard}>
+                  <span>AI Wallets (current page)</span>
+                  <strong>{formatNumber(displayedWallets, 0)}</strong>
+                </article>
+                <article className={styles.kpiCard}>
+                  <span>AI Rounds (current page)</span>
+                  <strong>{formatNumber(displayedRounds, 0)}</strong>
+                </article>
+              </section>
+              <div className={styles.layoutSingle}>
+              {!hasSelectedUser ? (
+              <section className={styles.panel}>
+                <div className={styles.panelHeader}>
+                  <div>
+                    <h2>Users</h2>
+                    <p>Total {totalUsers}</p>
+                  </div>
+                  <div className={styles.segmented}>
+                    <button
+                      type="button"
+                      className={`${styles.segmentedItem} ${hasChanceFilter === 'all' ? styles.segmentedItemActive : ''}`}
+                      onClick={() => {
+                        setHasChanceFilter('all');
+                        setPage(1);
+                      }}
+                    >
+                      All
+                    </button>
+                    <button
+                      type="button"
+                      className={`${styles.segmentedItem} ${hasChanceFilter === 'buyers' ? styles.segmentedItemActive : ''}`}
+                      onClick={() => {
+                        setHasChanceFilter('buyers');
+                        setPage(1);
+                      }}
+                    >
+                      Chance Buyers
+                    </button>
+                  </div>
                 </div>
 
-                <div className={styles.formGrid}>
-                  <label className={styles.field}>
-                    <span>Order</span>
-                    <input
-                      className={styles.input}
-                      type="number"
-                      value={dappForm.order}
-                      onChange={(event) =>
-                        setDappForm((current) => ({
-                          ...current,
-                          order: Number(event.target.value || 0),
-                        }))
-                      }
-                      placeholder="0"
-                    />
-                  </label>
-                </div>
-
-                <label className={styles.field}>
-                  <span>Link</span>
+                <div className={styles.searchRow}>
                   <input
                     className={styles.input}
-                    value={dappForm.url}
-                    onChange={(event) => setDappForm((current) => ({ ...current, url: event.target.value }))}
-                    placeholder="https://example.com"
+                    value={queryInput}
+                    placeholder="Search user / wallet / invite / credential"
+                    onChange={(event) => setQueryInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') runSearch();
+                    }}
                   />
-                </label>
+                  <button className={styles.secondaryButton} type="button" onClick={resetSearch}>
+                    Reset
+                  </button>
+                    <button className={styles.primaryButton} type="button" onClick={runSearch}>
+                      Search
+                    </button>
+                    <select
+                      className={styles.select}
+                      value={sortBy}
+                      onChange={(event) => {
+                        setSortBy(event.target.value as 'createdAt' | 'ninjaBalance' | 'aiWalletCount');
+                        setPage(1);
+                      }}
+                    >
+                      <option value="createdAt">Sort: Newest</option>
+                      <option value="ninjaBalance">Sort: NINJA</option>
+                      <option value="aiWalletCount">Sort: AI Wallets</option>
+                    </select>
+                    <button
+                      className={styles.secondaryButton}
+                      type="button"
+                      onClick={() => {
+                        setSortDir((prev) => (prev === 'desc' ? 'asc' : 'desc'));
+                        setPage(1);
+                      }}
+                    >
+                      {sortDir === 'desc' ? 'Desc' : 'Asc'}
+                    </button>
+                  </div>
 
-                <label className={styles.field}>
-                  <span>Description</span>
-                  <input
-                    className={styles.input}
-                    value={dappForm.description}
-                    onChange={(event) => setDappForm((current) => ({ ...current, description: event.target.value }))}
-                    placeholder="Short description"
-                  />
-                </label>
-
-                <div className={styles.formGrid}>
-                  <label className={styles.field}>
-                    <span>Icon URL</span>
-                    <input
-                      className={styles.input}
-                      value={dappForm.icon}
-                      onChange={(event) => setDappForm((current) => ({ ...current, icon: event.target.value }))}
-                      placeholder="https://... or /icon.png"
-                    />
-                  </label>
-                  <label className={styles.field}>
-                    <span>Upload Image</span>
-                    <input
-                      className={styles.input}
-                      type="file"
-                      accept="image/*"
-                      onChange={(event) => void handleDappImageChange(event)}
-                    />
-                  </label>
+                <div className={styles.tableWrap}>
+                  <table className={styles.table}>
+                    <thead>
+                      <tr>
+                        <th>User ID</th>
+                        <th>Name</th>
+                        <th>Wallet Address</th>
+                        <th>Invite Code</th>
+                        <th>Credential</th>
+                        <th>NINJA</th>
+                        <th>AI Wallets</th>
+                        <th>AI Rounds</th>
+                        <th>Chance Buys</th>
+                        <th>Latest Chance</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {loading ? (
+                        <tr><td colSpan={11} className={styles.emptyCell}>Loading...</td></tr>
+                      ) : users.length === 0 ? (
+                        <tr><td colSpan={11} className={styles.emptyCell}>No users found.</td></tr>
+                      ) : (
+                        sortedUsers.map((user) => (
+                          <tr key={user.id}>
+                            <td>#{user.id}</td>
+                            <td>{user.walletName || '-'}</td>
+                            <td><span className={styles.fullValue}>{user.walletAddress || '-'}</span></td>
+                            <td>{user.inviteCode || '-'}</td>
+                            <td><span className={styles.fullValue}>{user.credentialId || '-'}</span></td>
+                            <td>{formatNumber(user.ninjaBalance)}</td>
+                            <td>{formatNumber(user.aiWalletCount ?? 0)}</td>
+                            <td>{formatNumber(user.aiRoundCount ?? 0)}</td>
+                            <td>{formatNumber(user.chancePurchaseCount ?? 0)}</td>
+                            <td>{formatDate(user.latestChancePurchaseAt)}</td>
+                            <td>
+                              <button
+                                type="button"
+                                className={styles.secondaryButton}
+                                onClick={() => openUserDetail(user)}
+                              >
+                                Open
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
                 </div>
 
-                <label className={styles.checkboxField}>
-                  <input
-                    type="checkbox"
-                    checked={dappForm.featured}
-                    onChange={(event) => setDappForm((current) => ({ ...current, featured: event.target.checked }))}
-                  />
-                  <span>Featured</span>
-                </label>
+                <div className={styles.pagination}>
+                  <span>{page} / {pageCount}</span>
+                  <div className={styles.actionRow}>
+                    <button
+                      className={styles.secondaryButton}
+                      type="button"
+                      disabled={page <= 1}
+                      onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+                    >
+                      Prev
+                    </button>
+                    <button
+                      className={styles.secondaryButton}
+                      type="button"
+                      disabled={page >= pageCount}
+                      onClick={() => setPage((prev) => Math.min(pageCount, prev + 1))}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              </section>
+              ) : null}
+              {hasSelectedUser ? (
+              <section className={styles.panel}>
+                <div className={styles.panelHeader}>
+                  <div>
+                    <h2>{usersPanelTitle}</h2>
+                    <p>{usersPanelSubtitle || 'Select one user from table'}</p>
+                  </div>
+                  {hasSelectedUser ? (
+                    <button
+                      type="button"
+                      className={styles.secondaryButton}
+                      onClick={() => {
+                        setSelectedUser(null);
+                        setSelectedWalletAddress(null);
+                        setWalletDetail(null);
+                        setUserTab('overview');
+                      }}
+                    >
+                      Back to Users
+                    </button>
+                  ) : null}
+                </div>
 
-                {dappForm.icon ? (
-                  <div className={styles.previewCard}>
-                    <span>Icon Preview</span>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={resolveDappIcon(dappForm.icon)} alt={dappForm.name || 'DApp icon preview'} className={styles.previewImage} />
+                {!selectedUser ? (
+                  <div className={styles.emptyState}>Choose a user to view overview, AI wallets, NINJA, and transactions.</div>
+                ) : detailLoading ? (
+                  <div className={styles.emptyState}>Loading...</div>
+                ) : (
+                  <div className={styles.detailArea}>
+                    <div className={styles.tabs}>
+                      {(['overview', 'wallets', 'ninja', 'transactions'] as const).map((tab) => (
+                        <button
+                          key={tab}
+                          type="button"
+                          className={`${styles.tabButton} ${userTab === tab ? styles.tabButtonActive : ''}`}
+                          onClick={() => {
+                            setUserTab(tab);
+                            setSelectedWalletAddress(null);
+                            setWalletDetail(null);
+                            if (tab === 'wallets') {
+                              setWalletPage(1);
+                              void loadUserWallets(selectedUser.id, activeAdminKey, 1);
+                            }
+                          }}
+                        >
+                          {tab === 'overview'
+                            ? 'Overview'
+                            : tab === 'wallets'
+                              ? 'AI Wallets'
+                              : tab === 'ninja'
+                                ? 'NINJA'
+                                : 'Transactions'}
+                        </button>
+                      ))}
+                    </div>
+
+                {userTab === 'overview' ? (
+                  <div className={styles.grid2}>
+                    <article className={styles.card}>
+                      <h3>Profile</h3>
+                      <p>
+                        Credential:
+                        {' '}
+                        <span className={styles.fullValue}>{userDetail?.user.credentialId || '-'}</span>
+                      </p>
+                      <p>
+                        Wallet:
+                        {' '}
+                        <span className={styles.fullValue}>{userDetail?.user.walletAddress || '-'}</span>
+                      </p>
+                      <p>Wallet Name: {userDetail?.user.walletName || '-'}</p>
+                      <p>Passkey Counter: {formatNumber(userDetail?.user.passkeyCounter ?? 0)}</p>
+                      <p>Invite Code: {userDetail?.user.inviteCode}</p>
+                      <p>NINJA Balance: {formatNumber(userDetail?.user.ninjaBalance ?? 0)}</p>
+                    </article>
+                    <article className={styles.card}>
+                      <h3>AI Summary</h3>
+                      <p>Total Requests: {formatNumber(userDetail?.aiUsage.totalRequests ?? 0)}</p>
+                      <p>Total Input: {formatNumber(userDetail?.aiUsage.totalInputTokens ?? 0)}</p>
+                      <p>Total Output: {formatNumber(userDetail?.aiUsage.totalOutputTokens ?? 0)}</p>
+                      <p>Total Cost: {formatNumber(userDetail?.aiUsage.totalCostNinja ?? 0, 4)} NINJA</p>
+                      <p>AI Wallets: {formatNumber(userDetail?.aiWalletSummary?.walletCount ?? 0)}</p>
+                      <p>AI Rounds: {formatNumber(userDetail?.aiWalletSummary?.totalRounds ?? 0)}</p>
+                    </article>
+                    <article className={styles.cardSpan}>
+                      <h3>Recent Chance Purchases</h3>
+                      {chanceRows.length === 0 ? (
+                        <p className={styles.muted}>No chance purchases.</p>
+                      ) : (
+                        <div className={styles.list}>
+                          {chanceRows.map((row) => (
+                            <div key={row.id} className={styles.listItem}>
+                              <span>{row.productId}</span>
+                              <span>{row.chanceAmount} chance</span>
+                              <span>{formatDate(row.createdAt)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </article>
+                  </div>
+                ) : null}
+
+                {userTab === 'wallets' ? (
+                  <div className={styles.grid2}>
+                    <article className={styles.cardSpan}>
+                      <div className={styles.cardHeader}>
+                        <h3>AI Wallets ({walletsTotal})</h3>
+                      </div>
+                      {wallets.length === 0 ? (
+                        <p className={styles.muted}>No sandbox wallets found.</p>
+                      ) : (
+                        <table className={styles.innerTable}>
+                          <thead>
+                            <tr>
+                              <th>Wallet</th>
+                              <th>Sessions</th>
+                              <th>Rounds</th>
+                              <th>First Active</th>
+                              <th>Last Active</th>
+                              <th />
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {wallets.map((wallet) => (
+                              <tr key={wallet.sandboxAddress}>
+                                <td>
+                                  <span className={styles.fullValue}>
+                                    {wallet.sandboxAddress}
+                                  </span>
+                                </td>
+                                <td>{wallet.sessionCount}</td>
+                                <td>{wallet.roundCount}</td>
+                                <td>{formatDate(wallet.firstActiveAt)}</td>
+                                <td>{formatDate(wallet.lastActiveAt)}</td>
+                                <td>
+                                  <button
+                                    type="button"
+                                    className={styles.secondaryButton}
+                                    onClick={() => void loadWalletDetail(wallet.sandboxAddress)}
+                                  >
+                                    Detail
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                      <div className={styles.pagination}>
+                        <span>{walletPage} / {walletPageCount}</span>
+                        <div className={styles.actionRow}>
+                          <button
+                            type="button"
+                            className={styles.secondaryButton}
+                            disabled={walletPage <= 1}
+                            onClick={() => setWalletPage((prev) => Math.max(1, prev - 1))}
+                          >
+                            Prev
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.secondaryButton}
+                            disabled={walletPage >= walletPageCount}
+                            onClick={() => setWalletPage((prev) => Math.min(walletPageCount, prev + 1))}
+                          >
+                            Next
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+
+                    {walletDetail ? (
+                      <article className={styles.cardSpan}>
+                        <h3>Wallet Detail</h3>
+                        <p>
+                          Address:
+                          {' '}
+                          <span className={styles.fullValue}>
+                            {walletDetail.wallet.sandboxAddress}
+                          </span>
+                        </p>
+                        <p>Sessions: {walletDetail.wallet.sessionCount}</p>
+                        <p>Rounds: {walletDetail.wallet.roundCount}</p>
+
+                        <h4>Conversations</h4>
+                        {walletDetail.conversations.items.length === 0 ? (
+                          <p className={styles.muted}>No conversations.</p>
+                        ) : (
+                          <div className={styles.list}>
+                            {walletDetail.conversations.items.map((item) => (
+                              <div key={item.conversationId} className={styles.listItem}>
+                                <span>{item.title || item.conversationId}</span>
+                                <span>{item.roundCount} rounds</span>
+                                <span>{formatDate(item.updatedAt)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        <h4>Tool Summary</h4>
+                        {walletDetail.toolSummary.length === 0 ? (
+                          <p className={styles.muted}>No tool records.</p>
+                        ) : (
+                          <div className={styles.badges}>
+                            {walletDetail.toolSummary.map((tool) => (
+                              <span key={tool.toolId} className={styles.badge}>
+                                {tool.toolId}: {tool.count}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </article>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {userTab === 'ninja' ? (
+                  <div className={styles.grid2}>
+                    <article className={styles.card}>
+                      <h3>NINJA Balance</h3>
+                      <p>Current: {formatNumber(userDetail?.user.ninjaBalance ?? 0)} NINJA</p>
+                      <p>Chance Remaining: {formatNumber(userDetail?.user.chanceRemaining ?? 0)}</p>
+                      <p>Chance Cooldown End: {formatNumber(userDetail?.user.chanceCooldownEndsAt ?? 0, 0)}</p>
+                    </article>
+                    <article className={styles.card}>
+                      <h3>Adjust NINJA</h3>
+                      <form className={styles.form} onSubmit={saveNinjaBalance}>
+                        <label className={styles.field}>
+                          <span>Mode</span>
+                          <select
+                            className={styles.select}
+                            value={balanceMode}
+                            onChange={(event) => setBalanceMode(event.target.value as 'set' | 'increment')}
+                          >
+                            <option value="increment">Increment</option>
+                            <option value="set">Set</option>
+                          </select>
+                        </label>
+                        <label className={styles.field}>
+                          <span>Amount</span>
+                          <input
+                            className={styles.input}
+                            value={balanceAmount}
+                            onChange={(event) => setBalanceAmount(event.target.value)}
+                            placeholder="100"
+                          />
+                        </label>
+                        <label className={styles.field}>
+                          <span>Reason</span>
+                          <input
+                            className={styles.input}
+                            value={balanceReason}
+                            onChange={(event) => setBalanceReason(event.target.value)}
+                            placeholder="ops adjustment"
+                          />
+                        </label>
+                        <button className={styles.primaryButton} type="submit" disabled={saving}>
+                          {saving ? 'Saving...' : 'Save'}
+                        </button>
+                      </form>
+                    </article>
+                  </div>
+                ) : null}
+
+                {userTab === 'transactions' ? (
+                  <div className={styles.grid2}>
+                    <article className={styles.cardSpan}>
+                      <h3>AI Logs</h3>
+                      {userDetail?.aiLogs.length ? (
+                        <div className={styles.list}>
+                          {userDetail.aiLogs.map((log) => (
+                            <div key={log.id} className={styles.listItem}>
+                              <span>{log.model}</span>
+                              <span>in {log.inputTokens} / out {log.outputTokens}</span>
+                              <span>{formatDate(log.createdAt)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className={styles.muted}>No AI logs.</p>
+                      )}
+                    </article>
+                    <article className={styles.cardSpan}>
+                      <h3>NINJA Transactions</h3>
+                      {userDetail?.transactions.length ? (
+                        <div className={styles.list}>
+                          {userDetail.transactions.map((tx) => (
+                            <div key={tx.id} className={styles.listItem}>
+                              <span>{tx.type}</span>
+                              <span>{formatNumber(tx.amount, 4)}</span>
+                              <span>{formatDate(tx.createdAt)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className={styles.muted}>No transactions.</p>
+                      )}
+                    </article>
                   </div>
                 ) : null}
               </div>
-
-              <div className={styles.modalActions}>
-                {uploadingImage ? <span className={styles.inlineMeta}>Uploading image...</span> : <span />}
-                <div className={styles.actionGroup}>
-                  <button className={styles.secondaryButton} type="button" onClick={closeDappModal}>
-                    Cancel
-                  </button>
-                  <button
-                    className={styles.primaryButton}
-                    type="submit"
-                    disabled={savingDapp || uploadingImage || (!sortedDappTabs.length && dappForm.categories.length === 0)}
-                  >
-                    {savingDapp ? 'Saving...' : 'Save DApp'}
-                  </button>
-                </div>
-              </div>
-            </form>
-          </div>
-        </div>
-      ) : null}
-
-      {activeModule === 'dapps' && tabsModalOpen ? (
-        <div className={styles.modalOverlay} onClick={closeTabsModal}>
-          <div className={styles.modal} onClick={(event) => event.stopPropagation()}>
-            <div className={styles.modalHeader}>
+            )}
+              </section>
+              ) : null}
+            </div>
+            </>
+      ) : (
+        <div className={styles.layoutSingle}>
+          <section className={styles.panel}>
+            <div className={styles.panelHeader}>
               <div>
-                <h2>Manage Tabs</h2>
-                <p>These tabs are the category source used by every dapp.</p>
+                <h2>DApps</h2>
+                <p>Total {dapps.length}</p>
               </div>
-              <button className={styles.secondaryButton} type="button" onClick={closeTabsModal}>
-                Close
+              <div className={styles.actionRow}>
+                <button className={styles.secondaryButton} type="button" onClick={() => setTabsModalOpen(true)}>
+                  Manage Tabs
+                </button>
+                <button className={styles.primaryButton} type="button" onClick={openNewDappModal}>
+                  New DApp
+                </button>
+              </div>
+            </div>
+
+            <div className={styles.searchRow}>
+              <input
+                className={styles.input}
+                value={queryInput}
+                onChange={(event) => setQueryInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') runSearch();
+                }}
+                placeholder="Search dapp by name/description/url"
+              />
+              <button className={styles.secondaryButton} type="button" onClick={resetSearch}>Reset</button>
+              <button className={styles.primaryButton} type="button" onClick={runSearch}>Search</button>
+            </div>
+
+            <div className={styles.tableWrap}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th>DApp</th>
+                    <th>Category</th>
+                    <th>AI Driven</th>
+                    <th>Tools</th>
+                    <th>Updated</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr><td colSpan={6} className={styles.emptyCell}>Loading...</td></tr>
+                  ) : dapps.length === 0 ? (
+                    <tr><td colSpan={6} className={styles.emptyCell}>No dapps found.</td></tr>
+                  ) : (
+                    dapps.map((row) => (
+                      <tr key={row.id}>
+                        <td>
+                          <div className={styles.userCell}>
+                            <strong>
+                              <img src={resolveDappIcon(row.icon)} alt="" width={18} height={18} />
+                              {' '}
+                              {row.name}
+                            </strong>
+                            <span>{row.description}</span>
+                            <span className={styles.truncateText} title={row.url}>{row.url}</span>
+                          </div>
+                        </td>
+                        <td>{row.primaryCategory || '-'}</td>
+                        <td>{row.aiDriven ? 'Yes' : 'No'}</td>
+                        <td>{row.toolIds?.length || 0}</td>
+                        <td>{formatDate(row.updatedAt)}</td>
+                        <td>
+                          <div className={styles.actionRow}>
+                            <button
+                              className={styles.secondaryButton}
+                              type="button"
+                              onClick={() => selectDapp(row)}
+                            >
+                              Open
+                            </button>
+                            <button className={styles.secondaryButton} type="button" onClick={() => editDapp(row)}>
+                              Edit
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+          {selectedDapp ? (
+          <section className={styles.panel}>
+            <div className={styles.panelHeader}>
+              <div>
+                <h2>DApp Detail</h2>
+                <p>{selectedDapp.name}</p>
+              </div>
+              <button
+                type="button"
+                className={styles.secondaryButton}
+                onClick={() => setSelectedDappId(null)}
+              >
+                Back to DApps
               </button>
             </div>
 
-            <form className={styles.form} onSubmit={handleTabsSave}>
-              <div className={styles.modalBody}>
-                {error ? <div className={styles.alertError}>{error}</div> : null}
-                {success ? <div className={styles.alertSuccess}>{success}</div> : null}
-
-                <div className={styles.tabsConfigList}>
-                  {tabDrafts
-                    .slice()
-                    .sort((left, right) => left.order - right.order)
-                    .map((tab, index) => (
-                      <div key={tab.id} className={styles.tabConfigRow}>
-                        <div className={styles.tabConfigMeta}>
-                          <strong>{tab.id}</strong>
-                          <span>DApp category tab</span>
-                        </div>
-
-                        <label className={styles.field}>
-                          <span>ID</span>
-                          <input
-                            className={styles.input}
-                            value={tab.id}
-                            onChange={(event) =>
-                              setTabDrafts((current) =>
-                                current.map((item) =>
-                                  item.id === tab.id ? { ...item, id: event.target.value } : item,
-                                ),
-                              )
-                            }
-                            placeholder="social"
-                          />
-                        </label>
-
-                        <label className={styles.field}>
-                          <span>Label</span>
-                          <input
-                            className={styles.input}
-                            value={tab.label}
-                            onChange={(event) =>
-                              setTabDrafts((current) =>
-                                current.map((item) =>
-                                  item.id === tab.id ? { ...item, label: event.target.value } : item,
-                                ),
-                              )
-                            }
-                          />
-                        </label>
-
-                        <label className={styles.field}>
-                          <span>Order</span>
-                          <input
-                            className={styles.input}
-                            type="number"
-                            value={tab.order}
-                            onChange={(event) =>
-                              setTabDrafts((current) =>
-                                current.map((item) =>
-                                  item.id === tab.id
-                                    ? { ...item, order: Number(event.target.value || index) }
-                                    : item,
-                                ),
-                              )
-                            }
-                          />
-                        </label>
-
-                        <label className={styles.checkboxField}>
-                          <input
-                            type="checkbox"
-                            checked={tab.enabled}
-                            onChange={(event) =>
-                              setTabDrafts((current) =>
-                                current.map((item) =>
-                                  item.id === tab.id ? { ...item, enabled: event.target.checked } : item,
-                                ),
-                              )
-                            }
-                          />
-                          <span>Enabled</span>
-                        </label>
-
-                        <button
-                          className={styles.secondaryButton}
-                          type="button"
-                          onClick={() => removeTabDraft(tab.id)}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                </div>
-
-                <button className={styles.addRowButton} type="button" onClick={addTabDraft}>
-                  + Add Tab
-                </button>
+            <div className={styles.detailArea}>
+              <div className={styles.grid2}>
+                <article className={styles.card}>
+                  <h3>Basic</h3>
+                  <p>Name: {selectedDapp.name}</p>
+                  <p>Primary: {selectedDapp.primaryCategory || '-'}</p>
+                  <p>AI Driven: {selectedDapp.aiDriven ? 'Yes' : 'No'}</p>
+                  <p>Featured: {selectedDapp.featured ? 'Yes' : 'No'}</p>
+                  <p>Order: {selectedDapp.order}</p>
+                </article>
+                <article className={styles.card}>
+                  <h3>AI + Tools</h3>
+                  <p className={styles.truncateText} title={(selectedDapp.toolIds ?? []).join(', ') || '-'}>
+                    Tools: {(selectedDapp.toolIds ?? []).join(', ') || '-'}
+                  </p>
+                  <p>Prompt Version: {selectedDapp.aiPromptVersion || '-'}</p>
+                  <p className={styles.truncateText} title={selectedDapp.mentionLabel || selectedDapp.mentionPrompt || '-'}>
+                    Mention: {selectedDapp.mentionLabel || selectedDapp.mentionPrompt || '-'}
+                  </p>
+                </article>
+                <article className={styles.cardSpan}>
+                  <h3>Prompt</h3>
+                  <p className={styles.breakCell}>{selectedDapp.aiPrompt || '-'}</p>
+                </article>
               </div>
+            </div>
+          </section>
+          ) : null}
+        </div>
+      )}
+        </main>
+      </div>
 
-              <div className={styles.modalActions}>
-                <span className={styles.inlineMeta}>Saved to Redis as the dapp tab definition.</span>
-                <div className={styles.actionGroup}>
-                  <button className={styles.secondaryButton} type="button" onClick={closeTabsModal}>
-                    Cancel
-                  </button>
-                  <button className={styles.primaryButton} type="submit" disabled={submitting}>
-                    {submitting ? 'Saving...' : 'Save Tabs'}
-                  </button>
+      {dappModalOpen ? (
+        <div className={styles.modalOverlay} onClick={() => setDappModalOpen(false)}>
+          <div className={styles.modal} onClick={(event) => event.stopPropagation()}>
+            <div className={styles.panelHeader}>
+              <h3>{selectedDappId ? 'Edit DApp' : 'Create DApp'}</h3>
+              <button className={styles.secondaryButton} type="button" onClick={() => setDappModalOpen(false)}>
+                Close
+              </button>
+            </div>
+            <form className={styles.form} onSubmit={saveDapp}>
+              <label className={styles.field}>
+                <span>Name</span>
+                <input className={styles.input} value={dappForm.name} onChange={(e) => setDappForm((p) => ({ ...p, name: e.target.value }))} />
+              </label>
+              <label className={styles.field}>
+                <span>Description</span>
+                <input className={styles.input} value={dappForm.description} onChange={(e) => setDappForm((p) => ({ ...p, description: e.target.value }))} />
+              </label>
+              <label className={styles.field}>
+                <span>Order</span>
+                <input className={styles.input} type="number" value={dappForm.order} onChange={(e) => setDappForm((p) => ({ ...p, order: Number(e.target.value || 0) }))} />
+              </label>
+              <label className={styles.field}>
+                <span>URL</span>
+                <input className={styles.input} value={dappForm.url} onChange={(e) => setDappForm((p) => ({ ...p, url: e.target.value }))} />
+              </label>
+              <label className={styles.field}>
+                <span>Icon</span>
+                <input className={styles.input} value={dappForm.icon} onChange={(e) => setDappForm((p) => ({ ...p, icon: e.target.value }))} />
+              </label>
+              <label className={styles.field}>
+                <span>Upload image</span>
+                <input className={styles.input} type="file" accept="image/*" onChange={(event) => void uploadDappImage(event)} />
+              </label>
+              <label className={styles.field}>
+                <span>Categories</span>
+                <div className={styles.checkboxGrid}>
+                  {dappTabs.filter((tab) => !isAiDrivenTab(tab)).map((tab) => (
+                    <label key={tab.id} className={styles.checkboxItem}>
+                      <input
+                        type="checkbox"
+                        checked={dappForm.categories.includes(tab.id)}
+                        onChange={(event) => {
+                          setDappForm((prev) => ({
+                            ...prev,
+                            categories: event.target.checked
+                              ? Array.from(new Set([...prev.categories, tab.id]))
+                              : prev.categories.filter((item) => item !== tab.id),
+                          }));
+                        }}
+                      />
+                      <span>{tab.label}</span>
+                    </label>
+                  ))}
                 </div>
+              </label>
+              <label className={styles.field}>
+                <span>Primary Category</span>
+                <select
+                  className={styles.select}
+                  value={dappForm.primaryCategory ?? ''}
+                  onChange={(event) =>
+                    setDappForm((prev) => ({
+                      ...prev,
+                      primaryCategory: event.target.value ? event.target.value : undefined,
+                    }))
+                  }
+                >
+                  <option value="">Not set</option>
+                  {dappForm.categories.map((category) => (
+                    <option key={category} value={category}>{category}</option>
+                  ))}
+                </select>
+              </label>
+              <label className={styles.checkboxItem}>
+                <input
+                  type="checkbox"
+                  checked={dappForm.aiDriven}
+                  onChange={(event) =>
+                    setDappForm((prev) => ({
+                      ...prev,
+                      aiDriven: event.target.checked,
+                      toolIds: event.target.checked ? prev.toolIds : [],
+                    }))
+                  }
+                />
+                <span>AI Driven</span>
+              </label>
+              {dappForm.aiDriven ? (
+                <label className={styles.field}>
+                  <span>Tools</span>
+                  <div className={styles.checkboxGrid}>
+                    {toolDefinitions.map((tool) => (
+                      <label key={tool.id} className={styles.checkboxItem}>
+                        <input
+                          type="checkbox"
+                          checked={dappForm.toolIds.includes(tool.id)}
+                          onChange={(event) =>
+                            setDappForm((prev) => ({
+                              ...prev,
+                              toolIds: event.target.checked
+                                ? Array.from(new Set([...prev.toolIds, tool.id]))
+                                : prev.toolIds.filter((item) => item !== tool.id),
+                            }))
+                          }
+                        />
+                        <span>{tool.displayName}</span>
+                      </label>
+                    ))}
+                  </div>
+                </label>
+              ) : null}
+              <label className={styles.field}>
+                <span>AI Prompt</span>
+                <textarea className={styles.textarea} value={dappForm.aiPrompt} onChange={(e) => setDappForm((p) => ({ ...p, aiPrompt: e.target.value }))} />
+              </label>
+              <div className={styles.actionRow}>
+                {uploadingImage ? <span className={styles.muted}>Uploading...</span> : <span />}
+                <button className={styles.primaryButton} type="submit" disabled={saving}>
+                  {saving ? 'Saving...' : 'Save'}
+                </button>
               </div>
             </form>
           </div>
         </div>
       ) : null}
+
+      {tabsModalOpen ? (
+        <div className={styles.modalOverlay} onClick={() => setTabsModalOpen(false)}>
+          <div className={styles.modal} onClick={(event) => event.stopPropagation()}>
+            <div className={styles.panelHeader}>
+              <h3>Manage DApp Tabs</h3>
+              <button className={styles.secondaryButton} type="button" onClick={() => setTabsModalOpen(false)}>
+                Close
+              </button>
+            </div>
+            <form className={styles.form} onSubmit={saveTabs}>
+              <div className={styles.list}>
+                {tabDrafts.map((tab) => (
+                  <div key={tab.id} className={styles.listItemForm}>
+                    <input
+                      className={styles.input}
+                      value={tab.id}
+                      onChange={(event) => setTabDrafts((prev) => prev.map((item) => item.id === tab.id ? { ...item, id: event.target.value } : item))}
+                      placeholder="id"
+                    />
+                    <input
+                      className={styles.input}
+                      value={tab.label}
+                      onChange={(event) => setTabDrafts((prev) => prev.map((item) => item.id === tab.id ? { ...item, label: event.target.value } : item))}
+                      placeholder="label"
+                    />
+                    <input
+                      className={styles.input}
+                      type="number"
+                      value={tab.order}
+                      onChange={(event) => setTabDrafts((prev) => prev.map((item) => item.id === tab.id ? { ...item, order: Number(event.target.value || 0) } : item))}
+                      placeholder="order"
+                    />
+                    <button
+                      className={styles.secondaryButton}
+                      type="button"
+                      onClick={() => setTabDrafts((prev) => prev.filter((item) => item.id !== tab.id))}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className={styles.actionRow}>
+                <button
+                  className={styles.secondaryButton}
+                  type="button"
+                  onClick={() => setTabDrafts((prev) => [...prev, {
+                    id: `tab-${Date.now()}`,
+                    label: '',
+                    order: prev.length,
+                    enabled: true,
+                  }])}
+                >
+                  + Add Tab
+                </button>
+                <button className={styles.primaryButton} type="submit" disabled={saving}>
+                  {saving ? 'Saving...' : 'Save Tabs'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
     </div>
   );
 }
