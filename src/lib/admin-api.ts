@@ -417,6 +417,38 @@ export async function fetchUsers(params: {
   };
 }
 
+/**
+ * Pages through /admin/users until every matching row is collected.
+ * Used by the CSV export, which must cover the whole result set and not just
+ * the page currently rendered in the table.
+ */
+export async function fetchAllUsers(
+  params: Omit<Parameters<typeof fetchUsers>[0], 'page' | 'limit'> & {
+    pageSize?: number;
+    maxRows?: number;
+    onProgress?: (loaded: number, total: number) => void;
+  },
+) {
+  const pageSize = params.pageSize ?? 200;
+  const maxRows = params.maxRows ?? 50000;
+  const rows: AdminUserRow[] = [];
+  let page = 1;
+  let total = 0;
+
+  for (;;) {
+    const response = await fetchUsers({ ...params, page, limit: pageSize });
+    total = response.total;
+    rows.push(...response.users);
+    params.onProgress?.(rows.length, total);
+
+    if (response.users.length < pageSize) break;
+    if (rows.length >= total || rows.length >= maxRows) break;
+    page += 1;
+  }
+
+  return { users: rows.slice(0, maxRows), total };
+}
+
 export async function fetchUserDetail(userId: number, adminKey: string) {
   const response = await request<Record<string, unknown>>(`/admin/users/${userId}`, {}, adminKey);
   return normalizeUserDetail(response);
@@ -620,6 +652,90 @@ export async function saveAdminDappTabs(input: {
         tabs: input.tabs,
       }),
     },
+    input.adminKey,
+  );
+}
+
+export type AdminCatAssetBatch = {
+  id: number;
+  name: string;
+  metadataCid: string;
+  imageCid: string | null;
+  baseURI: string;
+  totalItems: number;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AdminCatMetadataItem = {
+  id: number;
+  batchId: number;
+  serialNo: number;
+  name: string;
+  description: string | null;
+  image: string | null;
+  status: string;
+  minted: boolean;
+  mintedTokenId: string | null;
+  mintedTxHash: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AdminCatMintRecord = {
+  id: number;
+  userId: number | null;
+  ownerAddress: string;
+  tokenId: string;
+  txHash: string;
+  contractAddress: string | null;
+  metadataItemId: number | null;
+  source: string;
+  mintedAt: string | null;
+  createdAt: string;
+};
+
+export async function fetchCatAssetBatches(input: { adminKey: string }) {
+  return request<{ items: AdminCatAssetBatch[] }>(
+    '/catnft/admin/batches',
+    {},
+    input.adminKey,
+  );
+}
+
+export async function fetchCatMetadataItems(input: {
+  adminKey: string;
+  batchId?: number;
+  page?: number;
+  limit?: number;
+}) {
+  const searchParams = new URLSearchParams();
+  if (input.batchId) searchParams.set('batchId', String(input.batchId));
+  if (input.page) searchParams.set('page', String(input.page));
+  if (input.limit) searchParams.set('limit', String(input.limit));
+
+  const suffix = searchParams.toString();
+  return request<{ items: AdminCatMetadataItem[]; total: number; page: number; limit: number }>(
+    `/catnft/admin/metadata-items${suffix ? `?${suffix}` : ''}`,
+    {},
+    input.adminKey,
+  );
+}
+
+export async function fetchCatMintRecords(input: {
+  adminKey: string;
+  page?: number;
+  limit?: number;
+}) {
+  const searchParams = new URLSearchParams();
+  if (input.page) searchParams.set('page', String(input.page));
+  if (input.limit) searchParams.set('limit', String(input.limit));
+
+  const suffix = searchParams.toString();
+  return request<{ items: AdminCatMintRecord[]; total: number; page: number; limit: number }>(
+    `/catnft/admin/mints${suffix ? `?${suffix}` : ''}`,
+    {},
     input.adminKey,
   );
 }

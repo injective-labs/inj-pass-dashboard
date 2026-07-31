@@ -1,9 +1,11 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import {
   adjustUserBalance,
   fetchAdminDapps,
+  fetchAllUsers,
   fetchUserAiWalletDetail,
   fetchUserAiWallets,
   fetchUserChancePurchases,
@@ -24,6 +26,7 @@ import {
   type AdminUserDetail,
   type AdminUserRow,
 } from '@/lib/admin-api';
+import { csvTimestamp, downloadCsv, type CsvValue } from '@/lib/csv';
 import styles from './page.module.css';
 
 const ADMIN_KEY_STORAGE = 'inj-dashboard-admin-key';
@@ -192,6 +195,8 @@ export default function HomePage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState('');
   const [balanceMode, setBalanceMode] = useState<'set' | 'increment'>('increment');
   const [balanceAmount, setBalanceAmount] = useState('');
   const [balanceReason, setBalanceReason] = useState('');
@@ -351,6 +356,178 @@ export default function HomePage() {
       setError(nextError instanceof Error ? nextError.message : 'Failed to load dapps');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function exportUsersCsv() {
+    if (!activeAdminKey) {
+      setError('Please enter admin key first.');
+      return;
+    }
+    setExporting(true);
+    setExportProgress('');
+    setError(null);
+    try {
+      const { users: allUsers } = await fetchAllUsers({
+        adminKey: activeAdminKey,
+        query,
+        hasChancePurchase: hasChanceFilter === 'buyers' ? true : undefined,
+        sortBy,
+        sortDir,
+        onProgress: (loaded, total) => setExportProgress(`${loaded} / ${total}`),
+      });
+
+      const rows: CsvValue[][] = [
+        [
+          'User ID',
+          'Name',
+          'Wallet Address',
+          'Invite Code',
+          'Invited By',
+          'Credential',
+          'NINJA Balance',
+          'Chance Remaining',
+          'AI Wallets',
+          'AI Rounds',
+          'Chance Buys',
+          'Latest Chance At',
+          'AI Requests',
+          'AI Input Tokens',
+          'AI Output Tokens',
+          'AI Cost (NINJA)',
+          'AI Last Used At',
+          'Created At',
+          'Updated At',
+        ],
+        ...allUsers.map((user) => [
+          user.id,
+          user.walletName ?? '',
+          user.walletAddress ?? '',
+          user.inviteCode,
+          user.invitedBy ?? '',
+          user.credentialId,
+          user.ninjaBalance,
+          user.chanceRemaining ?? 0,
+          user.aiWalletCount ?? 0,
+          user.aiRoundCount ?? 0,
+          user.chancePurchaseCount ?? 0,
+          user.latestChancePurchaseAt ?? '',
+          user.aiUsage.totalRequests,
+          user.aiUsage.totalInputTokens,
+          user.aiUsage.totalOutputTokens,
+          user.aiUsage.totalCostNinja,
+          user.aiUsage.lastUsedAt ?? '',
+          user.createdAt,
+          user.updatedAt,
+        ]),
+      ];
+
+      const scope = hasChanceFilter === 'buyers' ? 'chance-buyers' : 'all';
+      downloadCsv(`inj-users-${scope}-${csvTimestamp()}.csv`, rows);
+      setSuccess(`Exported ${allUsers.length} users.`);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'Failed to export users');
+    } finally {
+      setExporting(false);
+      setExportProgress('');
+    }
+  }
+
+  async function exportUserDetailCsv() {
+    if (!selectedUser || !activeAdminKey) return;
+    setExporting(true);
+    setError(null);
+    try {
+      const userId = selectedUser.id;
+      const detail =
+        userDetail && userDetail.user.id === userId
+          ? userDetail
+          : await fetchUserDetail(userId, activeAdminKey);
+
+      const [walletResult, chanceResult] = await Promise.all([
+        fetchUserAiWallets({ adminKey: activeAdminKey, userId, page: 1, limit: 500 }),
+        fetchUserChancePurchases({ adminKey: activeAdminKey, userId, page: 1, limit: 500 }),
+      ]);
+
+      const rows: CsvValue[][] = [
+        ['Profile'],
+        ['Field', 'Value'],
+        ['User ID', detail.user.id],
+        ['Wallet Name', detail.user.walletName ?? ''],
+        ['Wallet Address', detail.user.walletAddress ?? ''],
+        ['Credential', detail.user.credentialId],
+        ['Invite Code', detail.user.inviteCode],
+        ['Invited By', detail.user.invitedBy ?? ''],
+        ['Passkey Counter', detail.user.passkeyCounter ?? 0],
+        ['NINJA Balance', detail.user.ninjaBalance],
+        ['Chance Remaining', detail.user.chanceRemaining ?? 0],
+        ['Chance Cooldown Ends At', detail.user.chanceCooldownEndsAt ?? 0],
+        ['Created At', detail.user.createdAt],
+        ['Updated At', detail.user.updatedAt],
+        [],
+        ['AI Summary'],
+        ['Field', 'Value'],
+        ['Total Requests', detail.aiUsage.totalRequests],
+        ['Total Input Tokens', detail.aiUsage.totalInputTokens],
+        ['Total Output Tokens', detail.aiUsage.totalOutputTokens],
+        ['Total Cost (NINJA)', detail.aiUsage.totalCostNinja],
+        ['Last Used At', detail.aiUsage.lastUsedAt ?? ''],
+        ['AI Wallets', detail.aiWalletSummary?.walletCount ?? 0],
+        ['AI Rounds', detail.aiWalletSummary?.totalRounds ?? 0],
+        [],
+        [`AI Wallets (${walletResult.total})`],
+        ['Wallet', 'Sessions', 'Rounds', 'First Active', 'Last Active'],
+        ...walletResult.wallets.map((wallet) => [
+          wallet.sandboxAddress,
+          wallet.sessionCount,
+          wallet.roundCount,
+          wallet.firstActiveAt ?? '',
+          wallet.lastActiveAt ?? '',
+        ]),
+        [],
+        [`Chance Purchases (${chanceResult.total})`],
+        ['ID', 'Product', 'Chance Amount', 'Balance After', 'Status', 'Tx Hash', 'Chain', 'Created At'],
+        ...chanceResult.purchases.map((purchase) => [
+          purchase.id,
+          purchase.productId,
+          purchase.chanceAmount,
+          purchase.balanceAfter,
+          purchase.status,
+          purchase.txHash,
+          purchase.chainId ?? '',
+          purchase.createdAt,
+        ]),
+        [],
+        [`AI Logs (${detail.aiLogs.length})`],
+        ['ID', 'Model', 'Input Tokens', 'Output Tokens', 'Cost (NINJA)', 'Conversation', 'Created At'],
+        ...detail.aiLogs.map((log) => [
+          log.id,
+          log.model,
+          log.inputTokens,
+          log.outputTokens,
+          log.costNinja,
+          log.conversationId ?? '',
+          log.createdAt,
+        ]),
+        [],
+        [`NINJA Transactions (${detail.transactions.length})`],
+        ['ID', 'Type', 'Amount', 'Balance After', 'Metadata', 'Created At'],
+        ...detail.transactions.map((tx) => [
+          tx.id,
+          tx.type,
+          tx.amount,
+          tx.balanceAfter,
+          JSON.stringify(tx.metadata ?? {}),
+          tx.createdAt,
+        ]),
+      ];
+
+      downloadCsv(`inj-user-${userId}-${csvTimestamp()}.csv`, rows);
+      setSuccess(`Exported user #${userId}.`);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'Failed to export user detail');
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -598,6 +775,9 @@ export default function HomePage() {
             >
               DApps
             </button>
+            <Link href="/cats" className={styles.sidebarNavItem}>
+              Cat NFT Metadata
+            </Link>
           </div>
 
           <div className={styles.sidebarFooter}>
@@ -730,6 +910,17 @@ export default function HomePage() {
                     >
                       {sortDir === 'desc' ? 'Desc' : 'Asc'}
                     </button>
+                    <button
+                      className={styles.secondaryButton}
+                      type="button"
+                      disabled={exporting}
+                      title="Export every user matching the current search and filter"
+                      onClick={() => void exportUsersCsv()}
+                    >
+                      {exporting
+                        ? `Exporting${exportProgress ? ` ${exportProgress}` : ''}...`
+                        : 'Export CSV'}
+                    </button>
                   </div>
 
                 <div className={styles.tableWrap}>
@@ -814,18 +1005,29 @@ export default function HomePage() {
                     <p>{usersPanelSubtitle || 'Select one user from table'}</p>
                   </div>
                   {hasSelectedUser ? (
-                    <button
-                      type="button"
-                      className={styles.secondaryButton}
-                      onClick={() => {
-                        setSelectedUser(null);
-                        setSelectedWalletAddress(null);
-                        setWalletDetail(null);
-                        setUserTab('overview');
-                      }}
-                    >
-                      Back to Users
-                    </button>
+                    <div className={styles.actionRow}>
+                      <button
+                        type="button"
+                        className={styles.secondaryButton}
+                        disabled={exporting}
+                        title="Export this user's profile, wallets, chance purchases, AI logs and transactions"
+                        onClick={() => void exportUserDetailCsv()}
+                      >
+                        {exporting ? 'Exporting...' : 'Export CSV'}
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.secondaryButton}
+                        onClick={() => {
+                          setSelectedUser(null);
+                          setSelectedWalletAddress(null);
+                          setWalletDetail(null);
+                          setUserTab('overview');
+                        }}
+                      >
+                        Back to Users
+                      </button>
+                    </div>
                   ) : null}
                 </div>
 
