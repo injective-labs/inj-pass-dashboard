@@ -778,6 +778,9 @@ export default function HomePage() {
             <Link href="/cats" className={styles.sidebarNavItem}>
               Cat NFT Metadata
             </Link>
+            <Link href="/nft-rewards" className={styles.sidebarNavItem}>
+              NFT Rewards
+            </Link>
           </div>
 
           <div className={styles.sidebarFooter}>
