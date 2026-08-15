@@ -6,7 +6,8 @@ describe('NFT rewards operations page source', () => {
 
   it.each([
     'Worker Health', 'Snapshot', 'Daily Budget', 'Backlog',
-    'Collections', 'Reward Runs', 'Payouts',
+    'Collections', 'Eligibility Previews', 'Eligible wallets',
+    'Projected reward', 'Reward Runs', 'Payouts',
   ])('renders %s', (label) => expect(source).toContain(label));
 
   it('remains read-only and refreshes every 30 seconds', () => {

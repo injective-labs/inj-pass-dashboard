@@ -6,6 +6,7 @@ import { getDefaultAdminKey } from '@/lib/admin-api';
 import {
   fetchNftRewardCollections,
   fetchNftRewardPayouts,
+  fetchNftRewardPreviews,
   fetchNftRewardRunDetail,
   fetchNftRewardRuns,
   fetchNftRewardSummary,
@@ -17,6 +18,7 @@ import {
   getBudgetPercent,
   getWorkerState,
   type AdminNftRewardPayout,
+  type AdminNftRewardPreview,
   type AdminNftRewardRun,
   type AdminNftRewardRunDetail,
   type AdminNftRewardSummary,
@@ -27,6 +29,7 @@ import styles from './page.module.css';
 
 const ADMIN_KEY_STORAGE = 'inj-dashboard-admin-key';
 const RUNS_LIMIT = 25;
+const PREVIEWS_LIMIT = 25;
 const PAYOUTS_LIMIT = 50;
 
 const PAYOUT_STATES: NftRewardPayoutState[] = [
@@ -48,11 +51,11 @@ function getSafeError(error: unknown) {
 
 function StateBadge({ state }: { state: string | null | undefined }) {
   const label = state || '-';
-  const className = state === 'CRITICAL' || state === 'BROADCAST_UNKNOWN'
+  const className = state === 'CRITICAL' || state === 'BROADCAST_UNKNOWN' || state === 'FAILED'
     ? styles.badgeCritical
-    : state === 'STALE' || state === 'FAILED_RETRYABLE' || state === 'RETRY_WAIT'
+    : state === 'STALE' || state === 'FAILED_RETRYABLE' || state === 'RETRY_WAIT' || state === 'PARTIAL'
       ? styles.badgeWarning
-      : state === 'HEALTHY' || state === 'PAID' || state === 'CONFIRMED'
+      : state === 'HEALTHY' || state === 'PAID' || state === 'CONFIRMED' || state === 'COMPLETE'
         ? styles.badgeGood
         : state === 'DISABLED' || state === 'DRY_RUN'
           ? styles.badgeMuted
@@ -104,8 +107,10 @@ export default function NftRewardsPage() {
   const [summary, setSummary] = useState<AdminNftRewardSummary | null>(null);
   const [collections, setCollections] = useState<Awaited<ReturnType<typeof fetchNftRewardCollections>>>([]);
   const [runs, setRuns] = useState<Paginated<AdminNftRewardRun> | null>(null);
+  const [previews, setPreviews] = useState<Paginated<AdminNftRewardPreview> | null>(null);
   const [payouts, setPayouts] = useState<Paginated<AdminNftRewardPayout> | null>(null);
   const [runPage, setRunPage] = useState(1);
+  const [previewPage, setPreviewPage] = useState(1);
   const [payoutPage, setPayoutPage] = useState(1);
   const [rewardDate, setRewardDate] = useState('');
   const [payoutState, setPayoutState] = useState<NftRewardPayoutState | ''>('');
@@ -129,9 +134,10 @@ export default function NftRewardsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [summaryResult, collectionResult, runResult, payoutResult] = await Promise.all([
+      const [summaryResult, collectionResult, previewResult, runResult, payoutResult] = await Promise.all([
         fetchNftRewardSummary(adminKey),
         fetchNftRewardCollections(adminKey),
+        fetchNftRewardPreviews({ adminKey, page: previewPage, limit: PREVIEWS_LIMIT }),
         fetchNftRewardRuns({ adminKey, page: runPage, limit: RUNS_LIMIT }),
         fetchNftRewardPayouts({
           adminKey, page: payoutPage, limit: PAYOUTS_LIMIT,
@@ -143,6 +149,7 @@ export default function NftRewardsPage() {
       ]);
       setSummary(summaryResult);
       setCollections(collectionResult);
+      setPreviews(previewResult);
       setRuns(runResult);
       setPayouts(payoutResult);
       setLastRefresh(new Date().toISOString());
@@ -151,7 +158,7 @@ export default function NftRewardsPage() {
     } finally {
       setLoading(false);
     }
-  }, [activeAdminKey, appliedFilters, payoutPage, runPage]);
+  }, [activeAdminKey, appliedFilters, payoutPage, previewPage, runPage]);
 
   useEffect(() => {
     const stored = window.localStorage.getItem(ADMIN_KEY_STORAGE) || getDefaultAdminKey();
@@ -325,6 +332,35 @@ export default function NftRewardsPage() {
               </tr>)}</tbody>
             </table>
           </div>
+        </section>
+
+        <section className={styles.card} aria-labelledby="previews-heading">
+          <div className={styles.sectionHeader}>
+            <div>
+              <h2 id="previews-heading">Eligibility Previews</h2>
+              <p>Independent scans only. These records never create payouts or consume a reward date.</p>
+            </div>
+          </div>
+          <div className={styles.tableWrap}>
+            <table>
+              <thead><tr><th>Started</th><th>Status</th><th>Snapshot</th><th>Registered</th><th>Valid / invalid</th><th>Eligible wallets</th><th>Owned pairs</th><th>Projected reward</th><th>Daily cap</th><th>Collections</th><th>Error</th><th>Completed</th></tr></thead>
+              <tbody>{previews?.items.length ? previews.items.map((preview) => <tr key={preview.id}>
+                <td>{formatUtc(preview.startedAt)}</td>
+                <td><StateBadge state={preview.status} /></td>
+                <td>EVM {preview.evmBlockNumber || '-'}<br />Cosmos {preview.cosmosHeight || '-'}</td>
+                <td>{preview.registeredWalletCount}</td>
+                <td>{preview.validWalletCount} / {preview.invalidWalletCount}</td>
+                <td>{preview.eligibleWalletCount}</td>
+                <td>{preview.ownedObservationCount} / {preview.observationCount}<br /><span className={styles.muted}>{preview.errorObservationCount} errors</span></td>
+                <td>{formatInjWei(preview.projectedLiabilityWei)} INJ</td>
+                <td className={preview.exceedsDailyCap ? styles.errorText : styles.goodText}>{formatInjWei(preview.dailyCapWei)} INJ · {preview.exceedsDailyCap ? 'Exceeded' : 'Within cap'}</td>
+                <td>{preview.collectionStats.map((collection) => <div key={collection.key}>{collection.displayName}: {collection.ownedWalletCount}{collection.errorCount ? ` (${collection.errorCount} errors)` : ''}</div>)}</td>
+                <td>{preview.lastErrorCode || '-'}</td>
+                <td>{formatUtc(preview.completedAt)}</td>
+              </tr>) : <tr><td colSpan={12} className={styles.empty}>No eligibility previews loaded. Run pnpm nft-rewards:preview in the backend.</td></tr>}</tbody>
+            </table>
+          </div>
+          {previews ? <Pagination page={previewPage} total={previews.total} limit={PREVIEWS_LIMIT} onChange={setPreviewPage} /> : null}
         </section>
 
         <section className={styles.card} aria-labelledby="runs-heading">

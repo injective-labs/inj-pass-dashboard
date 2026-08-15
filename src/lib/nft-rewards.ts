@@ -74,6 +74,41 @@ export type AdminNftRewardCollection = {
   displayOrder: number;
 };
 
+export type NftRewardPreviewStatus =
+  | 'RUNNING'
+  | 'COMPLETE'
+  | 'PARTIAL'
+  | 'FAILED';
+
+export type AdminNftRewardPreview = {
+  id: string;
+  status: NftRewardPreviewStatus;
+  startedAt: string;
+  completedAt: string | null;
+  evmBlockNumber: string | null;
+  evmBlockHash: string | null;
+  cosmosHeight: string | null;
+  registeredWalletCount: number;
+  validWalletCount: number;
+  invalidWalletCount: number;
+  observationCount: number;
+  ownedObservationCount: number;
+  errorObservationCount: number;
+  eligibleWalletCount: number;
+  projectedLiabilityWei: string;
+  dailyCapWei: string;
+  exceedsDailyCap: boolean;
+  collectionStats: Array<{
+    key: string;
+    displayName: string;
+    vmType: 'EVM' | 'CW721';
+    rewardWei: string;
+    ownedWalletCount: number;
+    errorCount: number;
+  }>;
+  lastErrorCode: string | null;
+};
+
 export type AdminNftRewardRun = AdminNftRewardSummary['today'] & {
   id: string;
   createdAt: string;

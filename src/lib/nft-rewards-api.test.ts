@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchNftRewardCollections,
   fetchNftRewardPayouts,
+  fetchNftRewardPreviews,
   fetchNftRewardRunDetail,
   fetchNftRewardRuns,
   fetchNftRewardSummary,
@@ -35,7 +36,7 @@ describe('NFT reward API client', () => {
     );
   });
 
-  it('uses all five read-only reward paths', async () => {
+  it('uses all six read-only reward paths', async () => {
     vi.stubEnv('NEXT_PUBLIC_API_URL', 'https://api.example/api');
     vi.stubGlobal('fetch', fetchMock.mockImplementation(
       () => Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),
@@ -43,6 +44,7 @@ describe('NFT reward API client', () => {
 
     await fetchNftRewardSummary('secret');
     await fetchNftRewardCollections('secret');
+    await fetchNftRewardPreviews({ adminKey: 'secret', page: 1, limit: 25 });
     await fetchNftRewardRuns({ adminKey: 'secret', page: 1, limit: 25 });
     await fetchNftRewardRunDetail({ adminKey: 'secret', runId: 'run/id', page: 1, limit: 25 });
     await fetchNftRewardPayouts({ adminKey: 'secret', page: 1, limit: 50 });
@@ -50,6 +52,7 @@ describe('NFT reward API client', () => {
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       'https://api.example/api/admin/nft-rewards/summary',
       'https://api.example/api/admin/nft-rewards/collections',
+      'https://api.example/api/admin/nft-rewards/previews?page=1&limit=25',
       'https://api.example/api/admin/nft-rewards/runs?page=1&limit=25',
       'https://api.example/api/admin/nft-rewards/runs/run%2Fid?page=1&limit=25',
       'https://api.example/api/admin/nft-rewards/payouts?page=1&limit=50',

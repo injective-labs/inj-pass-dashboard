@@ -1,6 +1,7 @@
 import type {
   AdminNftRewardCollection,
   AdminNftRewardPayout,
+  AdminNftRewardPreview,
   AdminNftRewardRun,
   AdminNftRewardRunDetail,
   AdminNftRewardSummary,
@@ -57,6 +58,17 @@ export function fetchNftRewardSummary(adminKey: string): Promise<AdminNftRewardS
 
 export function fetchNftRewardCollections(adminKey: string): Promise<AdminNftRewardCollection[]> {
   return rewardRequest('/admin/nft-rewards/collections', adminKey);
+}
+
+export function fetchNftRewardPreviews(input: {
+  adminKey: string;
+  page: number;
+  limit: number;
+}): Promise<Paginated<AdminNftRewardPreview>> {
+  return rewardRequest(
+    `/admin/nft-rewards/previews${queryString({ page: input.page, limit: input.limit })}`,
+    input.adminKey,
+  );
 }
 
 export function fetchNftRewardRuns(input: {
