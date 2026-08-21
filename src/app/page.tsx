@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
+  ACCOUNT_TYPE_LABEL,
+  WALLET_KIND_LABEL,
   adjustUserBalance,
   fetchAdminDapps,
   fetchAllUsers,
@@ -11,7 +13,9 @@ import {
   fetchUserChancePurchases,
   fetchUserDetail,
   fetchUsers,
+  getAccountType,
   getDefaultAdminKey,
+  looksLikeBatchWallet,
   saveAdminDapp,
   saveAdminDappTabs,
   uploadAdminDappImage,
@@ -28,12 +32,13 @@ import {
 } from '@/lib/admin-api';
 import { csvTimestamp, downloadCsv, type CsvValue } from '@/lib/csv';
 import styles from './page.module.css';
+import { CURRENCY } from '@/config/currency';
 
 const ADMIN_KEY_STORAGE = 'inj-dashboard-admin-key';
 const PAGE_SIZE = 10;
 
 type ModuleKey = 'users' | 'dapps';
-type UserViewTab = 'overview' | 'wallets' | 'ninja' | 'transactions';
+type UserViewTab = 'overview' | 'wallets' | 'points' | 'transactions';
 
 type DAppEditorState = {
   id?: string;
@@ -149,8 +154,8 @@ function breadcrumbs(input: {
   if (input.userTab === 'wallets') {
     return ['Users', `#${input.user.id}`, 'AI Wallets'];
   }
-  if (input.userTab === 'ninja') {
-    return ['Users', `#${input.user.id}`, 'NINJA'];
+  if (input.userTab === 'points') {
+    return ['Users', `#${input.user.id}`, CURRENCY.symbol];
   }
   if (input.userTab === 'transactions') {
     return ['Users', `#${input.user.id}`, 'Transactions'];
@@ -168,7 +173,7 @@ export default function HomePage() {
   const [totalUsers, setTotalUsers] = useState(0);
   const [page, setPage] = useState(1);
   const [hasChanceFilter, setHasChanceFilter] = useState<'all' | 'buyers'>('all');
-  const [sortBy, setSortBy] = useState<'createdAt' | 'ninjaBalance' | 'aiWalletCount'>('createdAt');
+  const [sortBy, setSortBy] = useState<'createdAt' | 'pointsBalance' | 'aiWalletCount'>('createdAt');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [selectedUser, setSelectedUser] = useState<AdminUserRow | null>(null);
   const [userDetail, setUserDetail] = useState<AdminUserDetail | null>(null);
@@ -380,33 +385,37 @@ export default function HomePage() {
       const rows: CsvValue[][] = [
         [
           'User ID',
+          'Account Type',
+          'Looks Like Batch Wallet',
           'Name',
-          'Wallet Address',
+          'Main Wallet (self-custody)',
           'Invite Code',
           'Invited By',
           'Credential',
-          'NINJA Balance',
+          `${CURRENCY.symbol} Balance`,
           'Chance Remaining',
-          'AI Wallets',
+          'Agent Sandbox Wallets',
           'AI Rounds',
           'Chance Buys',
           'Latest Chance At',
           'AI Requests',
           'AI Input Tokens',
           'AI Output Tokens',
-          'AI Cost (NINJA)',
+          `AI Cost (${CURRENCY.symbol})`,
           'AI Last Used At',
           'Created At',
           'Updated At',
         ],
         ...allUsers.map((user) => [
           user.id,
+          ACCOUNT_TYPE_LABEL[getAccountType(user.credentialId)],
+          looksLikeBatchWallet(user.walletName),
           user.walletName ?? '',
           user.walletAddress ?? '',
           user.inviteCode,
           user.invitedBy ?? '',
           user.credentialId,
-          user.ninjaBalance,
+          user.pointsBalance,
           user.chanceRemaining ?? 0,
           user.aiWalletCount ?? 0,
           user.aiRoundCount ?? 0,
@@ -415,7 +424,7 @@ export default function HomePage() {
           user.aiUsage.totalRequests,
           user.aiUsage.totalInputTokens,
           user.aiUsage.totalOutputTokens,
-          user.aiUsage.totalCostNinja,
+          user.aiUsage.totalCostPoints,
           user.aiUsage.lastUsedAt ?? '',
           user.createdAt,
           user.updatedAt,
@@ -453,13 +462,14 @@ export default function HomePage() {
         ['Profile'],
         ['Field', 'Value'],
         ['User ID', detail.user.id],
+        ['Account Type', ACCOUNT_TYPE_LABEL[getAccountType(detail.user.credentialId)]],
+        ['Looks Like Batch Wallet', looksLikeBatchWallet(detail.user.walletName)],
         ['Wallet Name', detail.user.walletName ?? ''],
-        ['Wallet Address', detail.user.walletAddress ?? ''],
         ['Credential', detail.user.credentialId],
         ['Invite Code', detail.user.inviteCode],
         ['Invited By', detail.user.invitedBy ?? ''],
         ['Passkey Counter', detail.user.passkeyCounter ?? 0],
-        ['NINJA Balance', detail.user.ninjaBalance],
+        [`${CURRENCY.symbol} Balance`, detail.user.pointsBalance],
         ['Chance Remaining', detail.user.chanceRemaining ?? 0],
         ['Chance Cooldown Ends At', detail.user.chanceCooldownEndsAt ?? 0],
         ['Created At', detail.user.createdAt],
@@ -470,14 +480,25 @@ export default function HomePage() {
         ['Total Requests', detail.aiUsage.totalRequests],
         ['Total Input Tokens', detail.aiUsage.totalInputTokens],
         ['Total Output Tokens', detail.aiUsage.totalOutputTokens],
-        ['Total Cost (NINJA)', detail.aiUsage.totalCostNinja],
+        [`Total Cost (${CURRENCY.symbol})`, detail.aiUsage.totalCostPoints],
         ['Last Used At', detail.aiUsage.lastUsedAt ?? ''],
-        ['AI Wallets', detail.aiWalletSummary?.walletCount ?? 0],
+        ['Agent Sandbox Wallets', detail.aiWalletSummary?.walletCount ?? 0],
         ['AI Rounds', detail.aiWalletSummary?.totalRounds ?? 0],
         [],
-        [`AI Wallets (${walletResult.total})`],
-        ['Wallet', 'Sessions', 'Rounds', 'First Active', 'Last Active'],
+        [`Wallets (1 main + ${walletResult.total} agent sandbox)`],
+        ['Type', 'Custody', 'Address', 'Sessions', 'Rounds', 'First Active', 'Last Active'],
+        [
+          WALLET_KIND_LABEL.main,
+          'User',
+          detail.user.walletAddress ?? '',
+          '',
+          '',
+          '',
+          '',
+        ],
         ...walletResult.wallets.map((wallet) => [
+          WALLET_KIND_LABEL.agent_sandbox,
+          'Backend',
           wallet.sandboxAddress,
           wallet.sessionCount,
           wallet.roundCount,
@@ -499,18 +520,18 @@ export default function HomePage() {
         ]),
         [],
         [`AI Logs (${detail.aiLogs.length})`],
-        ['ID', 'Model', 'Input Tokens', 'Output Tokens', 'Cost (NINJA)', 'Conversation', 'Created At'],
+        ['ID', 'Model', 'Input Tokens', 'Output Tokens', `Cost (${CURRENCY.symbol})`, 'Conversation', 'Created At'],
         ...detail.aiLogs.map((log) => [
           log.id,
           log.model,
           log.inputTokens,
           log.outputTokens,
-          log.costNinja,
+          log.costPoints,
           log.conversationId ?? '',
           log.createdAt,
         ]),
         [],
-        [`NINJA Transactions (${detail.transactions.length})`],
+        [`${CURRENCY.symbol} Transactions (${detail.transactions.length})`],
         ['ID', 'Type', 'Amount', 'Balance After', 'Metadata', 'Created At'],
         ...detail.transactions.map((tx) => [
           tx.id,
@@ -558,7 +579,7 @@ export default function HomePage() {
     setWalletDetail(null);
   }
 
-  async function saveNinjaBalance(event: React.FormEvent<HTMLFormElement>) {
+  async function savePointsBalance(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedUser || !activeAdminKey) return;
     const amount = Number(balanceAmount);
@@ -576,7 +597,7 @@ export default function HomePage() {
         mode: balanceMode,
         reason: balanceReason,
       });
-      setSuccess(`Balance updated: ${result.delta >= 0 ? '+' : ''}${formatNumber(result.delta, 4)} NINJA`);
+      setSuccess(`Balance updated: ${result.delta >= 0 ? '+' : ''}${formatNumber(result.delta, 4)} ${CURRENCY.symbol}`);
       setBalanceAmount('');
       setBalanceReason('');
       await loadUsers();
@@ -729,6 +750,9 @@ export default function HomePage() {
     (sum, item) => sum + (item.aiRoundCount ?? 0),
     0,
   );
+  const displayedWalletLogins = users.filter(
+    (item) => getAccountType(item.credentialId) === 'wallet_login',
+  ).length;
 
   const userBreadCrumbs = breadcrumbs({
     module,
@@ -806,7 +830,7 @@ export default function HomePage() {
               <h2>{module === 'users' ? 'User Operations' : 'DApp Operations'}</h2>
               <p>
                 {module === 'users'
-                  ? 'Inspect users, AI wallets, NINJA and chance activity'
+                  ? `Inspect users, AI wallets, ${CURRENCY.symbol} and chance activity`
                   : 'Manage dapps, tabs and AI-driven tool binding'}
               </p>
             </div>
@@ -835,7 +859,14 @@ export default function HomePage() {
                   <strong>{formatNumber(displayedChanceBuyers, 0)}</strong>
                 </article>
                 <article className={styles.kpiCard}>
-                  <span>AI Wallets (current page)</span>
+                  <span>Wallet Login (current page)</span>
+                  <strong>
+                    {formatNumber(displayedWalletLogins, 0)}
+                    <small className={styles.muted}> / {formatNumber(users.length, 0)}</small>
+                  </strong>
+                </article>
+                <article className={styles.kpiCard}>
+                  <span>Agent Wallets (current page)</span>
                   <strong>{formatNumber(displayedWallets, 0)}</strong>
                 </article>
                 <article className={styles.kpiCard}>
@@ -895,12 +926,12 @@ export default function HomePage() {
                       className={styles.select}
                       value={sortBy}
                       onChange={(event) => {
-                        setSortBy(event.target.value as 'createdAt' | 'ninjaBalance' | 'aiWalletCount');
+                        setSortBy(event.target.value as 'createdAt' | 'pointsBalance' | 'aiWalletCount');
                         setPage(1);
                       }}
                     >
                       <option value="createdAt">Sort: Newest</option>
-                      <option value="ninjaBalance">Sort: NINJA</option>
+                      <option value="pointsBalance">Sort: {CURRENCY.symbol}</option>
                       <option value="aiWalletCount">Sort: AI Wallets</option>
                     </select>
                     <button
@@ -931,12 +962,13 @@ export default function HomePage() {
                     <thead>
                       <tr>
                         <th>User ID</th>
+                        <th>Account Type</th>
                         <th>Name</th>
-                        <th>Wallet Address</th>
+                        <th>Main Wallet</th>
                         <th>Invite Code</th>
                         <th>Credential</th>
-                        <th>NINJA</th>
-                        <th>AI Wallets</th>
+                        <th>{CURRENCY.symbol}</th>
+                        <th>Agent Wallets</th>
                         <th>AI Rounds</th>
                         <th>Chance Buys</th>
                         <th>Latest Chance</th>
@@ -945,18 +977,40 @@ export default function HomePage() {
                     </thead>
                     <tbody>
                       {loading ? (
-                        <tr><td colSpan={11} className={styles.emptyCell}>Loading...</td></tr>
+                        <tr><td colSpan={12} className={styles.emptyCell}>Loading...</td></tr>
                       ) : users.length === 0 ? (
-                        <tr><td colSpan={11} className={styles.emptyCell}>No users found.</td></tr>
+                        <tr><td colSpan={12} className={styles.emptyCell}>No users found.</td></tr>
                       ) : (
                         sortedUsers.map((user) => (
                           <tr key={user.id}>
                             <td>#{user.id}</td>
+                            <td>
+                              <div className={styles.badges}>
+                              <span
+                                className={styles.badge}
+                                title={
+                                  getAccountType(user.credentialId) === 'wallet_login'
+                                    ? 'Registered via wallet signature (/wallet-auth/verify). Used by both the batch script and real users connecting an external wallet.'
+                                    : 'Registered via WebAuthn passkey.'
+                                }
+                              >
+                                {ACCOUNT_TYPE_LABEL[getAccountType(user.credentialId)]}
+                              </span>
+                              {looksLikeBatchWallet(user.walletName) ? (
+                                <span
+                                  className={styles.badge}
+                                  title="Guess only: wallet name matches the generate-agent-wallets.ts batch pattern (agent-<timestamp>-NNN). The label is a CLI argument, so this is a hint to investigate, not proof."
+                                >
+                                  batch?
+                                </span>
+                              ) : null}
+                              </div>
+                            </td>
                             <td>{user.walletName || '-'}</td>
                             <td><span className={styles.fullValue}>{user.walletAddress || '-'}</span></td>
                             <td>{user.inviteCode || '-'}</td>
                             <td><span className={styles.fullValue}>{user.credentialId || '-'}</span></td>
-                            <td>{formatNumber(user.ninjaBalance)}</td>
+                            <td>{formatNumber(user.pointsBalance)}</td>
                             <td>{formatNumber(user.aiWalletCount ?? 0)}</td>
                             <td>{formatNumber(user.aiRoundCount ?? 0)}</td>
                             <td>{formatNumber(user.chancePurchaseCount ?? 0)}</td>
@@ -1035,13 +1089,13 @@ export default function HomePage() {
                 </div>
 
                 {!selectedUser ? (
-                  <div className={styles.emptyState}>Choose a user to view overview, AI wallets, NINJA, and transactions.</div>
+                  <div className={styles.emptyState}>Choose a user to view overview, AI wallets, {CURRENCY.symbol}, and transactions.</div>
                 ) : detailLoading ? (
                   <div className={styles.emptyState}>Loading...</div>
                 ) : (
                   <div className={styles.detailArea}>
                     <div className={styles.tabs}>
-                      {(['overview', 'wallets', 'ninja', 'transactions'] as const).map((tab) => (
+                      {(['overview', 'wallets', 'points', 'transactions'] as const).map((tab) => (
                         <button
                           key={tab}
                           type="button"
@@ -1060,8 +1114,8 @@ export default function HomePage() {
                             ? 'Overview'
                             : tab === 'wallets'
                               ? 'AI Wallets'
-                              : tab === 'ninja'
-                                ? 'NINJA'
+                              : tab === 'points'
+                                ? CURRENCY.symbol
                                 : 'Transactions'}
                         </button>
                       ))}
@@ -1077,21 +1131,29 @@ export default function HomePage() {
                         <span className={styles.fullValue}>{userDetail?.user.credentialId || '-'}</span>
                       </p>
                       <p>
-                        Wallet:
+                        Account Type:
+                        {' '}
+                        {ACCOUNT_TYPE_LABEL[getAccountType(userDetail?.user.credentialId)]}
+                        {looksLikeBatchWallet(userDetail?.user.walletName)
+                          ? ' (wallet name matches the batch-script pattern — verify before acting)'
+                          : ''}
+                      </p>
+                      <p>
+                        {WALLET_KIND_LABEL.main}:
                         {' '}
                         <span className={styles.fullValue}>{userDetail?.user.walletAddress || '-'}</span>
                       </p>
                       <p>Wallet Name: {userDetail?.user.walletName || '-'}</p>
                       <p>Passkey Counter: {formatNumber(userDetail?.user.passkeyCounter ?? 0)}</p>
                       <p>Invite Code: {userDetail?.user.inviteCode}</p>
-                      <p>NINJA Balance: {formatNumber(userDetail?.user.ninjaBalance ?? 0)}</p>
+                      <p>{CURRENCY.symbol} Balance: {formatNumber(userDetail?.user.pointsBalance ?? 0)}</p>
                     </article>
                     <article className={styles.card}>
                       <h3>AI Summary</h3>
                       <p>Total Requests: {formatNumber(userDetail?.aiUsage.totalRequests ?? 0)}</p>
                       <p>Total Input: {formatNumber(userDetail?.aiUsage.totalInputTokens ?? 0)}</p>
                       <p>Total Output: {formatNumber(userDetail?.aiUsage.totalOutputTokens ?? 0)}</p>
-                      <p>Total Cost: {formatNumber(userDetail?.aiUsage.totalCostNinja ?? 0, 4)} NINJA</p>
+                      <p>Total Cost: {formatNumber(userDetail?.aiUsage.totalCostPoints ?? 0, 4)} {CURRENCY.symbol}</p>
                       <p>AI Wallets: {formatNumber(userDetail?.aiWalletSummary?.walletCount ?? 0)}</p>
                       <p>AI Rounds: {formatNumber(userDetail?.aiWalletSummary?.totalRounds ?? 0)}</p>
                     </article>
@@ -1118,8 +1180,13 @@ export default function HomePage() {
                   <div className={styles.grid2}>
                     <article className={styles.cardSpan}>
                       <div className={styles.cardHeader}>
-                        <h3>AI Wallets ({walletsTotal})</h3>
+                        <h3>Agent Sandbox Wallets ({walletsTotal})</h3>
                       </div>
+                      <p className={styles.muted}>
+                        Backend-custodied. One address is generated per AI conversation and
+                        its private key is stored encrypted server-side — these are not the
+                        user&apos;s own wallet ({userDetail?.user.walletAddress || 'n/a'}).
+                      </p>
                       {wallets.length === 0 ? (
                         <p className={styles.muted}>No sandbox wallets found.</p>
                       ) : (
@@ -1228,17 +1295,17 @@ export default function HomePage() {
                   </div>
                 ) : null}
 
-                {userTab === 'ninja' ? (
+                {userTab === 'points' ? (
                   <div className={styles.grid2}>
                     <article className={styles.card}>
-                      <h3>NINJA Balance</h3>
-                      <p>Current: {formatNumber(userDetail?.user.ninjaBalance ?? 0)} NINJA</p>
+                      <h3>{CURRENCY.symbol} Balance</h3>
+                      <p>Current: {formatNumber(userDetail?.user.pointsBalance ?? 0)} {CURRENCY.symbol}</p>
                       <p>Chance Remaining: {formatNumber(userDetail?.user.chanceRemaining ?? 0)}</p>
                       <p>Chance Cooldown End: {formatNumber(userDetail?.user.chanceCooldownEndsAt ?? 0, 0)}</p>
                     </article>
                     <article className={styles.card}>
-                      <h3>Adjust NINJA</h3>
-                      <form className={styles.form} onSubmit={saveNinjaBalance}>
+                      <h3>Adjust {CURRENCY.symbol}</h3>
+                      <form className={styles.form} onSubmit={savePointsBalance}>
                         <label className={styles.field}>
                           <span>Mode</span>
                           <select
@@ -1295,7 +1362,7 @@ export default function HomePage() {
                       )}
                     </article>
                     <article className={styles.cardSpan}>
-                      <h3>NINJA Transactions</h3>
+                      <h3>{CURRENCY.symbol} Transactions</h3>
                       {userDetail?.transactions.length ? (
                         <div className={styles.list}>
                           {userDetail.transactions.map((tx) => (
