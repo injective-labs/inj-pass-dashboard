@@ -32,7 +32,7 @@ import {
 } from '@/lib/admin-api';
 import { csvTimestamp, downloadCsv, type CsvValue } from '@/lib/csv';
 import styles from './page.module.css';
-import { CURRENCY } from '@/config/currency';
+import { CURRENCY, formatPoints } from '@/config/currency';
 
 const ADMIN_KEY_STORAGE = 'inj-dashboard-admin-key';
 const PAGE_SIZE = 10;
@@ -597,7 +597,7 @@ export default function HomePage() {
         mode: balanceMode,
         reason: balanceReason,
       });
-      setSuccess(`Balance updated: ${result.delta >= 0 ? '+' : ''}${formatNumber(result.delta, 4)} ${CURRENCY.symbol}`);
+      setSuccess(`Balance updated: ${result.delta >= 0 ? '+' : ''}${formatPoints(result.delta)} ${CURRENCY.symbol}`);
       setBalanceAmount('');
       setBalanceReason('');
       await loadUsers();
@@ -1010,7 +1010,7 @@ export default function HomePage() {
                             <td><span className={styles.fullValue}>{user.walletAddress || '-'}</span></td>
                             <td>{user.inviteCode || '-'}</td>
                             <td><span className={styles.fullValue}>{user.credentialId || '-'}</span></td>
-                            <td>{formatNumber(user.pointsBalance)}</td>
+                            <td>{formatPoints(user.pointsBalance)}</td>
                             <td>{formatNumber(user.aiWalletCount ?? 0)}</td>
                             <td>{formatNumber(user.aiRoundCount ?? 0)}</td>
                             <td>{formatNumber(user.chancePurchaseCount ?? 0)}</td>
@@ -1146,14 +1146,14 @@ export default function HomePage() {
                       <p>Wallet Name: {userDetail?.user.walletName || '-'}</p>
                       <p>Passkey Counter: {formatNumber(userDetail?.user.passkeyCounter ?? 0)}</p>
                       <p>Invite Code: {userDetail?.user.inviteCode}</p>
-                      <p>{CURRENCY.symbol} Balance: {formatNumber(userDetail?.user.pointsBalance ?? 0)}</p>
+                      <p>{CURRENCY.symbol} Balance: {formatPoints(userDetail?.user.pointsBalance ?? 0)}</p>
                     </article>
                     <article className={styles.card}>
                       <h3>AI Summary</h3>
                       <p>Total Requests: {formatNumber(userDetail?.aiUsage.totalRequests ?? 0)}</p>
                       <p>Total Input: {formatNumber(userDetail?.aiUsage.totalInputTokens ?? 0)}</p>
                       <p>Total Output: {formatNumber(userDetail?.aiUsage.totalOutputTokens ?? 0)}</p>
-                      <p>Total Cost: {formatNumber(userDetail?.aiUsage.totalCostPoints ?? 0, 4)} {CURRENCY.symbol}</p>
+                      <p>Total Cost: {formatPoints(userDetail?.aiUsage.totalCostPoints ?? 0)} {CURRENCY.symbol}</p>
                       <p>AI Wallets: {formatNumber(userDetail?.aiWalletSummary?.walletCount ?? 0)}</p>
                       <p>AI Rounds: {formatNumber(userDetail?.aiWalletSummary?.totalRounds ?? 0)}</p>
                     </article>
@@ -1299,7 +1299,7 @@ export default function HomePage() {
                   <div className={styles.grid2}>
                     <article className={styles.card}>
                       <h3>{CURRENCY.symbol} Balance</h3>
-                      <p>Current: {formatNumber(userDetail?.user.pointsBalance ?? 0)} {CURRENCY.symbol}</p>
+                      <p>Current: {formatPoints(userDetail?.user.pointsBalance ?? 0)} {CURRENCY.symbol}</p>
                       <p>Chance Remaining: {formatNumber(userDetail?.user.chanceRemaining ?? 0)}</p>
                       <p>Chance Cooldown End: {formatNumber(userDetail?.user.chanceCooldownEndsAt ?? 0, 0)}</p>
                     </article>
