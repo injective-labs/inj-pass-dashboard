@@ -3,7 +3,7 @@ export type AdminUserRow = {
   credentialId: string;
   inviteCode: string;
   invitedBy: string | null;
-  ninjaBalance: number;
+  pointsBalance: number;
   chanceRemaining?: number;
   chanceCooldownEndsAt?: number;
   walletAddress: string | null;
@@ -18,7 +18,7 @@ export type AdminUserRow = {
     totalRequests: number;
     totalInputTokens: number;
     totalOutputTokens: number;
-    totalCostNinja: number;
+    totalCostPoints: number;
     lastUsedAt: string | null;
   };
 };
@@ -29,7 +29,7 @@ export type AdminUserDetail = {
     credentialId: string;
     inviteCode: string;
     invitedBy: string | null;
-    ninjaBalance: number;
+    pointsBalance: number;
     chanceRemaining?: number;
     chanceCooldownEndsAt?: number;
     walletAddress: string | null;
@@ -42,7 +42,7 @@ export type AdminUserDetail = {
     totalRequests: number;
     totalInputTokens: number;
     totalOutputTokens: number;
-    totalCostNinja: number;
+    totalCostPoints: number;
     lastUsedAt: string | null;
   };
   aiLogs: Array<{
@@ -50,7 +50,7 @@ export type AdminUserDetail = {
     model: string;
     inputTokens: number;
     outputTokens: number;
-    costNinja: number;
+    costPoints: number;
     conversationId: string | null;
     createdAt: string;
   }>;
@@ -144,6 +144,48 @@ export type AdminPasskeyCredentialRow = {
   updatedAt: string;
 };
 
+/**
+ * How the account was registered.
+ *
+ * `wallet_login` accounts are created by POST /wallet-auth/verify when no user
+ * matches the signing address. That path is shared by the batch script
+ * (scripts/generate-agent-wallets.ts) AND by real people connecting an external
+ * wallet in the app, so this tells you the auth method — NOT whether the
+ * account is a bot. Nothing in the schema records that today.
+ */
+export type AdminAccountType = 'passkey' | 'wallet_login';
+
+export const ACCOUNT_TYPE_LABEL: Record<AdminAccountType, string> = {
+  passkey: 'Passkey',
+  wallet_login: 'Wallet Login',
+};
+
+export function getAccountType(credentialId?: string | null): AdminAccountType {
+  return String(credentialId ?? '').startsWith('wallet:')
+    ? 'wallet_login'
+    : 'passkey';
+}
+
+/**
+ * Heuristic only. generate-agent-wallets.ts names wallets
+ * `${batchLabel}-001` with batchLabel defaulting to `agent-<epoch-ms>`.
+ * The label is a CLI argument and a real user could pick the same name, so
+ * treat a match as a hint to investigate, never as proof.
+ */
+const BATCH_WALLET_NAME = /^agent-\d{10,}-\d{3,}$/;
+
+export function looksLikeBatchWallet(walletName?: string | null) {
+  return BATCH_WALLET_NAME.test(String(walletName ?? '').trim());
+}
+
+/** Wallets tied to a user, tagged by who holds the private key. */
+export type AdminWalletKind = 'main' | 'agent_sandbox';
+
+export const WALLET_KIND_LABEL: Record<AdminWalletKind, string> = {
+  main: 'Main (self-custody)',
+  agent_sandbox: 'Agent Sandbox (backend-custodied)',
+};
+
 export type AdminDAppCategory = string;
 export type AdminDAppPrimaryCategory = AdminDAppCategory;
 
@@ -231,7 +273,7 @@ function normalizeUserRow(row: Record<string, unknown>): AdminUserRow {
     credentialId: String(row.credentialId ?? ''),
     inviteCode: String(row.inviteCode ?? ''),
     invitedBy: (row.invitedBy as string | null) ?? null,
-    ninjaBalance: toFiniteNumber(row.ninjaBalance),
+    pointsBalance: toFiniteNumber(row.pointsBalance),
     chanceRemaining: toFiniteNumber(row.chanceRemaining),
     chanceCooldownEndsAt: toFiniteNumber(row.chanceCooldownEndsAt),
     walletAddress: (row.walletAddress as string | null) ?? null,
@@ -247,7 +289,7 @@ function normalizeUserRow(row: Record<string, unknown>): AdminUserRow {
       totalRequests: toFiniteNumber((row.aiUsage as { totalRequests?: unknown } | undefined)?.totalRequests),
       totalInputTokens: toFiniteNumber((row.aiUsage as { totalInputTokens?: unknown } | undefined)?.totalInputTokens),
       totalOutputTokens: toFiniteNumber((row.aiUsage as { totalOutputTokens?: unknown } | undefined)?.totalOutputTokens),
-      totalCostNinja: toFiniteNumber((row.aiUsage as { totalCostNinja?: unknown } | undefined)?.totalCostNinja),
+      totalCostPoints: toFiniteNumber((row.aiUsage as { totalCostPoints?: unknown } | undefined)?.totalCostPoints),
       lastUsedAt: (row.aiUsage as { lastUsedAt?: string | null } | undefined)?.lastUsedAt ?? null,
     },
   };
@@ -265,7 +307,7 @@ function normalizeUserDetail(payload: Record<string, unknown>): AdminUserDetail 
       credentialId: String(user.credentialId ?? ''),
       inviteCode: String(user.inviteCode ?? ''),
       invitedBy: (user.invitedBy as string | null) ?? null,
-      ninjaBalance: toFiniteNumber(user.ninjaBalance),
+      pointsBalance: toFiniteNumber(user.pointsBalance),
       chanceRemaining: toFiniteNumber(user.chanceRemaining),
       chanceCooldownEndsAt: toFiniteNumber(user.chanceCooldownEndsAt),
       walletAddress: (user.walletAddress as string | null) ?? null,
@@ -278,7 +320,7 @@ function normalizeUserDetail(payload: Record<string, unknown>): AdminUserDetail 
       totalRequests: toFiniteNumber(aiUsage.totalRequests),
       totalInputTokens: toFiniteNumber(aiUsage.totalInputTokens),
       totalOutputTokens: toFiniteNumber(aiUsage.totalOutputTokens),
-      totalCostNinja: toFiniteNumber(aiUsage.totalCostNinja),
+      totalCostPoints: toFiniteNumber(aiUsage.totalCostPoints),
       lastUsedAt: (aiUsage.lastUsedAt as string | null) ?? null,
     },
     aiLogs: aiLogs.map((log) => {
@@ -288,7 +330,7 @@ function normalizeUserDetail(payload: Record<string, unknown>): AdminUserDetail 
         model: String(nextLog.model ?? ''),
         inputTokens: toFiniteNumber(nextLog.inputTokens),
         outputTokens: toFiniteNumber(nextLog.outputTokens),
-        costNinja: toFiniteNumber(nextLog.costNinja),
+        costPoints: toFiniteNumber(nextLog.costPoints),
         conversationId: (nextLog.conversationId as string | null) ?? null,
         createdAt: String(nextLog.createdAt ?? ''),
       };
@@ -390,7 +432,7 @@ export async function fetchUsers(params: {
   page?: number;
   limit?: number;
   hasChancePurchase?: boolean;
-  sortBy?: 'createdAt' | 'ninjaBalance' | 'aiWalletCount';
+  sortBy?: 'createdAt' | 'pointsBalance' | 'aiWalletCount';
   sortDir?: 'asc' | 'desc';
 }) {
   const searchParams = new URLSearchParams();
@@ -543,7 +585,7 @@ export async function adjustUserBalance(input: {
     delta: number;
     transactionId: number;
   }>(
-    `/admin/users/${input.userId}/ninja-balance`,
+    `/admin/users/${input.userId}/points-balance`,
     {
       method: 'PATCH',
       body: JSON.stringify({
